@@ -51,8 +51,91 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out "dist/${{ matrix.platform }}-${{ matrix.arch }}" \
             --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
+      - name: Test POSIX bootstrap with native package
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          sh -n install.sh
+          python3 scripts/test_bootstrap.py \
+            --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}"
+      - name: Test PowerShell bootstrap with native package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          ./scripts/test_bootstrap.ps1 `
+            -Archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" `
+            -Arch "${{ matrix.arch }}"
       - uses: actions/upload-artifact@v4
         with:
           name: z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: z-codex-router-*
+          path: dist
+          merge-multiple: true
+      - name: Verify tag and assemble public assets
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import tomllib
+
+          root = pathlib.Path(".")
+          cargo = tomllib.loads((root / "Cargo.toml").read_text())
+          plugin = json.loads(
+              (root / "plugins/z-codex-router/.codex-plugin/plugin.json").read_text()
+          )
+          release = json.loads(
+              (root / "plugins/z-codex-router/release/manifest.json").read_text()
+          )
+          versions = {cargo["package"]["version"], plugin["version"], release["version"]}
+          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if versions != {expected}:
+              raise SystemExit(f"tag/version mismatch: tag={expected} files={versions}")
+          PY
+          cp install.sh install.ps1 AGENT_INSTALL.md dist/
+          (
+            cd dist
+            sha256sum \
+              z-codex-router-*.tar.gz \
+              install.sh install.ps1 AGENT_INSTALL.md |
+              sort -k2 > SHA256SUMS
+          )
+          python3 scripts/verify_release_assets.py dist
+      - name: Create public GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release already exists: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --latest \
+            --title "Z Codex Router $GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            dist/z-codex-router-*.tar.gz \
+            dist/SHA256SUMS \
+            dist/install.sh \
+            dist/install.ps1 \
+            dist/AGENT_INSTALL.md
