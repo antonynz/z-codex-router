@@ -1,30 +1,31 @@
-# Z Codex Router v1.0.0
+# Z Codex Router v1.0.1
 
 ## 中文
 
-首次正式版本。Z Codex Router 使用 tier、mode 与版本化 profile，为 Codex 任务选择精确的
-`(model, reasoning effort)`，验证失败时 fail closed。
+本次补丁版本新增 `recover-router` 与 `uninstall-router`，补齐安全恢复与卸载闭环。
 
-安装只需把仓库 URL 发给 Agent 并要求安装或“安装并启用”。Agent 按 `AGENT_INSTALL.md`
-从公开 Release 直链下载当前平台唯一的预编译包与 `SHA256SUMS`，校验后安装到持久 source；
-无需 Rust、repo clone、GitHub 登录/API、`gh` 或 `jq`。
+- `recover` 安全恢复中断事务，并只清理能按事务身份和哈希验证的新版本。
+- `uninstall` 只撤销受管块、状态与 payload，保护用户的非托管 `AGENTS.md` 和
+  `config.toml` 内容；重复执行保持安全。
+- Doctor 明确区分 `OK_ENABLED` 与 `OK_NOT_ENABLED`。
+- README 提供安装并启用、恢复或回滚、停用并卸载三类中英文提示词。
 
-六个平台资产均由对应 GitHub hosted runner 原生构建和验证。macOS arm64 另有本地 release
-build、隔离 cold/hot install、enable 与 Doctor 实测；其他五个平台的结论来自各自原生
-runner，而非本地或交叉编译冒充。
+六个平台包由对应 GitHub-hosted runner 构建，并执行仓库既有的平台打包与 bootstrap
+检查；本地额外完成 macOS arm64 release 构建和隔离生命周期验证。
 
 ## English
 
-This is the first stable release. Z Codex Router uses tiers, modes, and versioned profiles to select
-an exact `(model, reasoning effort)` for each Codex task and fails closed when verification is
-incomplete.
+This patch adds `recover-router` and `uninstall-router` to complete the safe recovery and removal
+flows.
 
-Give the repository URL to an Agent and ask it to install, or explicitly to install and enable.
-Following `AGENT_INSTALL.md`, the Agent downloads only this host's prebuilt package and
-`SHA256SUMS` from public Release direct URLs, verifies them, and installs a persistent source. No
-Rust, repository clone, GitHub login/API, `gh`, or `jq` is required.
+- `recover` safely restores interrupted transactions and removes a newly created version only when
+  its transaction identity and hash are verified.
+- `uninstall` revokes only managed blocks, state, and payload while preserving user-owned
+  `AGENTS.md` and `config.toml` content; repeated runs remain safe.
+- Doctor explicitly distinguishes `OK_ENABLED` from `OK_NOT_ENABLED`.
+- The README now includes bilingual prompts for install and enable, recovery or rollback, and
+  disable and uninstall.
 
-All six platform assets are built and validated on native GitHub-hosted runners for their
-architectures. macOS arm64 additionally has a local release build plus isolated cold/hot install,
-enable, and Doctor evidence. The other five platform claims come from their native runners, not
-from local or disguised cross-compilation.
+All six platform packages are built on their corresponding GitHub-hosted runners and run the
+repository's existing package and bootstrap checks. macOS arm64 additionally has a local release
+build and isolated lifecycle verification.

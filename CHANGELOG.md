@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1 - 2026-07-29
+
+- Added `recover-router` and `uninstall-router` skills backed by fail-closed `recover` and
+  `uninstall` control-plane commands.
+- Added safe recovery for interrupted transactions, including verified cleanup of a version
+  created by the interrupted transaction.
+- Protected unmanaged `AGENTS.md` and `config.toml` content during uninstall, with repeatable
+  not-enabled behavior and explicit Doctor status.
+- Added bilingual README prompts for install and enable, recovery or rollback, and disable and
+  uninstall workflows.
+
 ## 1.0.0 - 2026-07-29
 
 - Renamed the unpublished local plugin, crate, marketplace, managed-state namespace, and release assets to Z Codex Router (`z-codex-router`).

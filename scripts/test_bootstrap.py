@@ -431,6 +431,15 @@ def test_negative_paths() -> None:
 def test_native_archive(
     archive: Path, platform: str, arch: str, real_codex: Path | None = None
 ) -> None:
+    with tarfile.open(archive, "r:gz") as packaged:
+        manifest_file = packaged.extractfile(
+            "plugins/z-codex-router/release/manifest.json"
+        )
+        if manifest_file is None:
+            raise AssertionError("native archive release manifest is missing")
+        version = json.load(manifest_file).get("version")
+        if not isinstance(version, str):
+            raise AssertionError("native archive release version is invalid")
     with tempfile.TemporaryDirectory(prefix="zcr-bootstrap-native-") as temp:
         root = Path(temp)
         fixture = root / "release"
@@ -443,12 +452,12 @@ def test_native_archive(
         assert (detected_platform, detected_arch) == (platform, arch)
         override = {"CODEX_BIN": str(real_codex)} if real_codex else None
         cold = run_installer(
-            root, fixture, tools, "--enable", env_override=override
+            root, fixture, tools, "--enable", env_override=override, version=version
         )
         assert '"code": "OK"' in cold.stdout
         assert "ZCR_CACHE_HIT=false" in cold.stdout
         hot = run_installer(
-            root, fixture, tools, "--enable", env_override=override
+            root, fixture, tools, "--enable", env_override=override, version=version
         )
         assert '"code": "OK_NO_CHANGE"' in hot.stdout
         assert "ZCR_CACHE_HIT=true" in hot.stdout

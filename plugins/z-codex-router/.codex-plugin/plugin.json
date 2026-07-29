@@ -1,6 +1,6 @@
 {
   "name": "z-codex-router",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A local, fail-closed router policy for Codex tasks.",
   "author": {
     "name": "antonynz"

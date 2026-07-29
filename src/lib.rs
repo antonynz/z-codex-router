@@ -1458,13 +1458,30 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/z-codex-router")
     }
 
+    fn historical_v1_source_fixture() -> TempDir {
+        let temp = tempfile::tempdir().expect("historical source fixture");
+        let root = temp.path().join("plugins/z-codex-router");
+        copy_path(&source_root(), &root).unwrap();
+        for relative in [".codex-plugin/plugin.json", "release/manifest.json"] {
+            let path = root.join(relative);
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            manifest["version"] = serde_json::Value::String("1.0.0".into());
+            fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        }
+        temp
+    }
+
     fn fixture() -> TempDir {
         tempfile::tempdir().expect("fixture")
     }
 
     fn run(home: &Path, command: Command, source: bool) -> Result<Outcome> {
+        let source_fixture = source.then(historical_v1_source_fixture);
         execute(Options {
-            source: source.then(source_root),
+            source: source_fixture
+                .as_ref()
+                .map(|fixture| fixture.path().join("plugins/z-codex-router")),
             codex_home: Some(home.to_path_buf()),
             command,
         })
