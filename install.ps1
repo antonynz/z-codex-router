@@ -284,10 +284,10 @@ function Invoke-ZcrInstall {
         throw "E_URL_INSECURE: -BaseUrl must use HTTPS"
     }
 
-    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Windows
     )
-    if (-not $isWindows) {
+    if (-not $runningOnWindows) {
         throw "E_PLATFORM_UNSUPPORTED: use install.sh on macOS or Linux"
     }
     $pair = Resolve-ZcrPlatform -Os "Windows_NT" -Architecture (
