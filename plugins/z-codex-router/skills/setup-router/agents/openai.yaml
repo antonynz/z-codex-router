@@ -1,0 +1,4 @@
+interface:
+  display_name: "Enable Z Codex Router"
+  short_description: "Enable the portable global router"
+  default_prompt: "Enable Z Codex Router globally."

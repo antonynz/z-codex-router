@@ -1,0 +1,24 @@
+[package]
+name = "z-codex-router"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+repository = "https://github.com/antonynz/z-codex-router"
+description = "Fail-closed local control plane for Z Codex Router"
+
+[[bin]]
+name = "routerctl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+directories = "5.0"
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.10"
+thiserror = "1.0"
+toml_edit = "0.22"
+walkdir = "2.5"

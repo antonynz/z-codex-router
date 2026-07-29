@@ -1,0 +1,20 @@
+{
+  "name": "z-codex-router",
+  "interface": {
+    "displayName": "Z Codex Router"
+  },
+  "plugins": [
+    {
+      "name": "z-codex-router",
+      "source": {
+        "source": "local",
+        "path": "./plugins/z-codex-router"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Z Codex Router Doctor"
+  short_description: "Inspect router state without changes"
+  default_prompt: "Check my Z Codex Router installation."

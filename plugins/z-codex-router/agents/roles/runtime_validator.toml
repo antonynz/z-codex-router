@@ -1,0 +1,7 @@
+id = "runtime_validator"
+model = "{{model}}"
+reasoning_effort = "{{reasoning_effort}}"
+task_scope = "{{task_scope}}"
+owned_paths = "{{owned_paths}}"
+acceptance = "{{acceptance}}"
+permission = "May validate runtime, GUI, device, simulator, platform, and full-build behavior after implementation is stable."

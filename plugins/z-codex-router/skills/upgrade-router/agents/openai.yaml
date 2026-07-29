@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upgrade Z Codex Router"
+  short_description: "Safely upgrade the router"
+  default_prompt: "Safely upgrade Z Codex Router."

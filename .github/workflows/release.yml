@@ -1,0 +1,58 @@
+name: Release package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to package after maintainer approval
+        required: true
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15-intel, platform: darwin, arch: amd64, rust_target: x86_64-apple-darwin }
+          - { os: macos-15, platform: darwin, arch: arm64, rust_target: aarch64-apple-darwin }
+          - { os: ubuntu-latest, platform: linux, arch: amd64, rust_target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, platform: linux, arch: arm64, rust_target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, platform: windows, arch: amd64, rust_target: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, platform: windows, arch: arm64, rust_target: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build release binary
+        env:
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
+        run: cargo build --locked --release --target "${{ matrix.rust_target }}"
+      - name: Stage plugin asset
+        shell: bash
+        run: |
+          binary="target/${{ matrix.rust_target }}/release/routerctl"
+          if [ "${{ matrix.platform }}" = windows ]; then binary="${binary}.exe"; fi
+          python scripts/package_release.py \
+            --binary "$binary" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --out "dist/${{ matrix.platform }}-${{ matrix.arch }}" \
+            --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error

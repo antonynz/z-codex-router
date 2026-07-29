@@ -1,0 +1,38 @@
+{
+  "name": "z-codex-router",
+  "version": "1.0.0",
+  "description": "A local, fail-closed router policy for Codex tasks.",
+  "author": {
+    "name": "antonynz"
+  },
+  "homepage": "https://github.com/antonynz/z-codex-router",
+  "repository": "https://github.com/antonynz/z-codex-router",
+  "license": "Apache-2.0",
+  "keywords": [
+    "routing",
+    "policy",
+    "profiles",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Z Codex Router",
+    "shortDescription": "Enable a portable, fail-closed Codex task router.",
+    "longDescription": "Install, inspect, and safely upgrade a portable global routing policy for Codex.",
+    "developerName": "antonynz",
+    "category": "Productivity",
+    "capabilities": [
+      "Local configuration",
+      "Validation"
+    ],
+    "websiteURL": "https://github.com/antonynz/z-codex-router",
+    "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/terms.md",
+    "defaultPrompt": [
+      "Enable Z Codex Router globally.",
+      "Check my Z Codex Router installation.",
+      "Safely upgrade Z Codex Router."
+    ],
+    "brandColor": "#2463EB"
+  }
+}

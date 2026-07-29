@@ -1,0 +1,7 @@
+id = "code_writer"
+model = "{{model}}"
+reasoning_effort = "{{reasoning_effort}}"
+task_scope = "{{task_scope}}"
+owned_paths = "{{owned_paths}}"
+acceptance = "{{acceptance}}"
+permission = "May modify only assigned source, tests, scripts, and necessary project configuration."

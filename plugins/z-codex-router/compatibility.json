@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "codexHomeRequired": true,
+    "platforms": ["darwin", "linux", "windows"],
+    "architectures": ["amd64", "arm64"],
+    "requiredProfiles": [
+      "portable/default.toml",
+      "stable/current-gpt-5.6-reference.toml",
+      "candidate/example-next-model.toml"
+    ]
+  },
+  "installer": {
+    "managedBlockProtocol": 1,
+    "configToml": "untouched-1.0.0",
+    "failureMode": "closed"
+  }
+}

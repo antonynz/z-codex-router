@@ -1,0 +1,22 @@
+schema_version = 1
+
+[metadata]
+name = "current-gpt-5.6-reference"
+status = "reference"
+purpose = "Reference mapping for the listed, evaluated environment only; it is not a universal recommendation."
+evaluation_state = "listed-environment-reference"
+
+[compatibility]
+runtime_metadata_required = true
+exact_match_required = true
+supported_platforms = ["darwin", "linux", "windows"]
+
+[routing]
+A0 = { model = "current-qualified-root", effort = "runtime-qualified" }
+A1 = { model = "gpt-5.6-luna", effort = "high" }
+B0 = { model = "gpt-5.6-luna", effort = "xhigh" }
+B1 = { model = "gpt-5.6-terra", effort = "high" }
+B2 = { model = "gpt-5.6-terra", effort = "xhigh" }
+C1 = { model = "gpt-5.6-sol", effort = "medium" }
+C2 = { model = "gpt-5.6-terra", effort = "max" }
+C3 = { model = "gpt-5.6-sol", effort = "max" }

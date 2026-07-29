@@ -1,0 +1,21 @@
+schema_version = 1
+
+[metadata]
+name = "portable-default"
+status = "stable"
+purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
+
+[preflight]
+require_explicit_runtime_metadata = true
+require_exact_route_match = true
+require_platform_capability = true
+on_unknown = "fail-closed"
+on_missing_profile = "fail-closed"
+on_incompatible_profile = "fail-closed"
+on_disabled_candidate = "fail-closed"
+
+[selection]
+stable_profile = "stable/current-gpt-5.6-reference.toml"
+candidate_profiles = ["candidate/example-next-model.toml"]
+allow_candidate_as_default = false
+silent_fallback = false

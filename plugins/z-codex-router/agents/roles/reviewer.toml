@@ -1,0 +1,7 @@
+id = "reviewer"
+model = "{{model}}"
+reasoning_effort = "{{reasoning_effort}}"
+task_scope = "{{task_scope}}"
+owned_paths = ""
+acceptance = "{{acceptance}}"
+permission = "Read-only independent review for explicitly requested high-risk or high-value work."

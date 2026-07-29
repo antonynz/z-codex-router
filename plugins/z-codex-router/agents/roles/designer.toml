@@ -1,0 +1,7 @@
+id = "designer"
+model = "{{model}}"
+reasoning_effort = "{{reasoning_effort}}"
+task_scope = "{{task_scope}}"
+owned_paths = "{{owned_paths}}"
+acceptance = "{{acceptance}}"
+permission = "May create assigned design artifacts; does not alter business implementation without explicit ownership."

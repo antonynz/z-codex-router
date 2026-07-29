@@ -1,0 +1,7 @@
+id = "analyst"
+model = "{{model}}"
+reasoning_effort = "{{reasoning_effort}}"
+task_scope = "{{task_scope}}"
+owned_paths = ""
+acceptance = "{{acceptance}}"
+permission = "Read-only evidence, research, and option analysis."

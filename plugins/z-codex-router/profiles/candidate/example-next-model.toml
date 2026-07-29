@@ -1,0 +1,17 @@
+schema_version = 1
+
+[metadata]
+name = "example-next-model"
+status = "disabled"
+purpose = "Illustrative candidate profile for a future model; it cannot be selected or replace stable."
+evaluation_state = "unevaluated"
+enabled = false
+
+[compatibility]
+runtime_metadata_required = true
+exact_match_required = true
+supported_platforms = ["darwin", "linux", "windows"]
+
+[routing]
+B2 = { model = "gpt-6.0-example", effort = "xhigh" }
+C1 = { model = "gpt-6.0-example", effort = "medium" }
