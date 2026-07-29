@@ -17,21 +17,24 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Z Codex Router",
-    "shortDescription": "Enable a portable, fail-closed Codex task router.",
-    "longDescription": "Install, inspect, and safely upgrade a portable global routing policy for Codex.",
+    "shortDescription": "Install, enable, recover, and remove a safe task router.",
+    "longDescription": "Install and enable, inspect, recover, safely upgrade, or cleanly remove a portable global routing policy for Codex.",
     "developerName": "antonynz",
     "category": "Productivity",
     "capabilities": [
       "Local configuration",
-      "Validation"
+      "Validation",
+      "Recovery",
+      "Safe uninstallation"
     ],
     "websiteURL": "https://github.com/antonynz/z-codex-router",
     "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
     "termsOfServiceURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/terms.md",
     "defaultPrompt": [
-      "Enable Z Codex Router globally.",
+      "Install and enable Z Codex Router globally.",
       "Check my Z Codex Router installation.",
-      "Safely upgrade Z Codex Router."
+      "Safely recover Z Codex Router after a failed action.",
+      "Safely disable and uninstall Z Codex Router."
     ],
     "brandColor": "#2463EB"
   }

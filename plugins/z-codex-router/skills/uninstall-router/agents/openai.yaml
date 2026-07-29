@@ -1,0 +1,4 @@
+interface:
+  display_name: "Uninstall Z Codex Router"
+  short_description: "Safely disable and uninstall the router"
+  default_prompt: "Use $uninstall-router to safely disable and uninstall Z Codex Router."

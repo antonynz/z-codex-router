@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recover Z Codex Router"
+  short_description: "Safely recover an interrupted router action"
+  default_prompt: "Use $recover-router to safely recover an interrupted Z Codex Router action."

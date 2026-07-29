@@ -12,7 +12,7 @@ Version / 版本：`1.0.0`
 
 Z Codex Router 是一个 skills-only Codex 插件。把
 `https://github.com/antonynz/z-codex-router` 发给具备终端、网络和写权限的 Agent，即可从
-公开 GitHub Release 快速安装；无需 clone 仓库、安装 Rust 或下载其他平台包。
+公开 GitHub Release 快速安装；无需 clone 仓库或下载其他平台包。
 
 ### 模型选择是核心
 
@@ -26,14 +26,33 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 
 ![Z Codex Router 中文架构](docs/images/z-codex-router-architecture-zh.png)
 
-### 把这一段发给 Agent
+### 把这些提示词发给 Agent
+
+#### 安装并启用
 
 > 请从 https://github.com/antonynz/z-codex-router 的公开 GitHub Release 安装并启用 Z Codex
-> Router。不要 clone 仓库、不要构建 Rust、不要使用 GitHub API；严格按 AGENT_INSTALL.md
+> Router。不要要求我安装 CLI 或手工执行命令；不要 clone 仓库、不要使用 GitHub API；严格按 AGENT_INSTALL.md
 > 自动识别当前平台，只下载一个匹配的预编译包和 SHA256SUMS，校验后安装到持久 source，
-> 执行 dry-run、启用和 Doctor，并回报耗时、下载字节与结果。测试不得写真实 Codex home。
+> 执行 dry-run、启用和 Doctor，并回报耗时、下载字节与结果。测试不得写真实 Codex home；如果
+> 此会话只能安装插件或需要新会话，明确回报“已安装但未启用”及唯一下一步“调用 Enable Z Codex
+> Router”。
 
-只有明确说“启用”时，Agent 才应改变全局路由。只安装插件时省略 enable 步骤。
+#### 恢复或回滚
+
+> 恢复 Z Codex Router。先运行 Doctor；若为 `E_TRANSACTION_PENDING`，运行 `recover` 恢复原
+> 事务，再运行 Doctor。只操作受管块、payload 和状态，绝不覆盖我的其他 `AGENTS.md` 或
+> `config.toml` 内容；哈希或用户修改冲突时停止。只有我明确要求回滚已完成的启用或升级时，才运行
+> `rollback`。
+
+#### 停用并卸载
+
+> 停用并卸载 Z Codex Router。按固定顺序运行 Doctor → `uninstall` → Doctor，要求最终为
+> `OK_NOT_ENABLED`；`uninstall` 必须先撤销精确受管块和状态、验证我的非受管内容不变、清理受管
+> payload/备份/状态。任一冲突或失败都保留插件和可恢复控制面，绝不先删插件；仅在最终验收后执行
+> `codex plugin remove z-codex-router@z-codex-router --json`。重复执行应安全，且不要删除整个
+> `AGENTS.md` 或 `config.toml`。
+
+普通“安装”只安装插件并执行 dry-run，不等于启用全局路由；只有明确“安装并启用”才会改变全局路由。
 
 ### 支持平台
 
@@ -46,7 +65,7 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 
 ### 详细文档
 
-- [Agent 安装、权限、安全、缓存、升级与回滚协议](AGENT_INSTALL.md)
+- [Agent 安装、权限、安全、缓存、恢复、升级、回滚与卸载协议](AGENT_INSTALL.md)
 - [Router 架构](plugins/z-codex-router/core/router.md)
 - [安全策略](SECURITY.md)
 - [隐私](docs/privacy.md) · [条款](docs/terms.md) · [支持](docs/support.md)
@@ -58,8 +77,8 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 
 Z Codex Router is a skills-only Codex plugin. Give
 `https://github.com/antonynz/z-codex-router` to an Agent with terminal, network, and write access
-to install quickly from a public GitHub Release—without cloning the repository, installing Rust,
-or downloading packages for other platforms.
+to install quickly from a public GitHub Release—without cloning the repository or downloading
+packages for other platforms.
 
 ### Model selection is the product
 
@@ -75,16 +94,38 @@ or downloading packages for other platforms.
 
 ![Z Codex Router architecture](docs/images/z-codex-router-architecture-en.png)
 
-### Paste this to an Agent
+### Paste these prompts to an Agent
+
+#### Install and enable
 
 > Install and enable Z Codex Router from the public GitHub Release at
-> https://github.com/antonynz/z-codex-router. Do not clone the repository, build Rust, or use the
-> GitHub API. Follow AGENT_INSTALL.md exactly: detect this host, download only its one prebuilt
+> https://github.com/antonynz/z-codex-router. Do not ask me to install a CLI or run commands;
+> do not clone the repository or use the GitHub API. Follow AGENT_INSTALL.md exactly: detect this
+> host, download only its one prebuilt
 > package plus SHA256SUMS, verify it, install a persistent source, run dry-run, enable, and Doctor,
 > then report elapsed time, downloaded bytes, and results. Never target my real Codex home in tests.
+> If this session can only install the plugin or needs a new session, explicitly report “installed
+> but not enabled” and the single next step: invoke Enable Z Codex Router.
 
-The Agent may change global routing only when enablement is explicit. Omit enablement for a
-plugin-only install.
+#### Recover or roll back
+
+> Recover Z Codex Router. Run Doctor first; if it returns `E_TRANSACTION_PENDING`, run `recover`
+> to restore the original transaction, then run Doctor again. Touch only managed blocks, payload,
+> and state; never overwrite my other `AGENTS.md` or `config.toml` content, and stop on a hash or
+> user-change conflict. Run `rollback` only when I explicitly ask to undo a completed enablement
+> or upgrade.
+
+#### Disable and uninstall
+
+> Disable and uninstall Z Codex Router. Use this exact order: Doctor → `uninstall` → Doctor and
+> require final `OK_NOT_ENABLED`; `uninstall` must first revoke only the exact managed block and
+> state, verify my unmanaged content is unchanged, and clean managed payload/backups/state. On any
+> conflict or failure, retain the plugin and recoverable control plane—never remove the plugin
+> first. Only after final acceptance run `codex plugin remove z-codex-router@z-codex-router --json`.
+> It must be safe to repeat and must not delete my whole `AGENTS.md` or `config.toml`.
+
+An ordinary “install” installs the plugin and performs a dry-run; it does not enable global routing.
+Only explicit “install and enable” may change global routing.
 
 ### Supported platforms
 
@@ -98,7 +139,7 @@ no binary; runnable packages are published in GitHub Releases.
 
 ### Detailed documentation
 
-- [Agent install, permissions, security, cache, upgrade, and rollback protocol](AGENT_INSTALL.md)
+- [Agent install, permissions, security, cache, recovery, upgrade, rollback, and uninstall protocol](AGENT_INSTALL.md)
 - [Router architecture](plugins/z-codex-router/core/router.md)
 - [Security policy](SECURITY.md)
 - [Privacy](docs/privacy.md) · [Terms](docs/terms.md) · [Support](docs/support.md)

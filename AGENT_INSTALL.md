@@ -19,6 +19,9 @@ This is the deterministic install contract for an Agent that receives only:
   `CODEX_HOME`. The router control binary itself never reads or writes `config.toml`.
 - With `--enable`, `routerctl` manages only its exact hashed block in `CODEX_HOME/AGENTS.md` and
   state below `CODEX_HOME/z-codex-router`.
+- If a request cannot enable global routing in the same session, report **“installed but not
+  enabled”** and the single next step: invoke the Enable Z Codex Router skill. Never imply that a
+  plugin-only install enabled global routing.
 - Do not run the installer against a real Codex home during tests. Set both an isolated `HOME` and
   an absolute isolated `CODEX_HOME`.
 - There is no hidden install hook, MCP server, app, telemetry, or marketplace submission.
@@ -30,6 +33,8 @@ This is the deterministic install contract for an Agent that receives only:
   `routerctl` 本身从不读写 `config.toml`。
 - 传 `--enable` 后，`routerctl` 只管理 `CODEX_HOME/AGENTS.md` 中精确哈希匹配的 block，以及
   `CODEX_HOME/z-codex-router` 下的自身状态。
+- 若当前会话无法完成全局启用，必须明确回报“已安装但未启用”，并给出唯一下一步：调用 Enable
+  Z Codex Router skill。不得把仅安装插件说成已启用全局路由。
 - 测试时不得指向真实 Codex home；必须同时设置隔离的 `HOME` 和绝对路径 `CODEX_HOME`。
 - 不存在隐藏 install hook、MCP server、app、遥测或 marketplace 提交。
 
@@ -180,14 +185,37 @@ codex plugin add z-codex-router@z-codex-router
 
 - Upgrade: rerun the latest installer with enablement authority. If router state exists, the
   bootstrap uses `upgrade --dry-run` and then `upgrade`; the binary rejects non-newer versions.
-- Rollback is never automatic. Use the persistent active source printed as `ZCR_SOURCE` (POSIX) or
-  `source` (PowerShell), then invoke its packaged launcher with `rollback`. The audited version
+- A failed enablement or upgrade restores its own just-created backup before returning. If an
+  interrupted process leaves `E_TRANSACTION_PENDING`, run `recover`: it restores only when the
+  journal and current files match its recorded before/after values, and it does not need a second
+  authorization.
+- Rollback of a completed action is never automatic. Only after the user explicitly asks, invoke
+  `rollback` from the persistent active source printed as `ZCR_SOURCE` (POSIX) or `source`
+  (PowerShell). It replaces only the exact managed block and current pointer; the audited version
   snapshot is printed as `ZCR_VERSION_SOURCE` or `versionSource`.
 
-升级时重新运行 latest installer；已有 state 会自动走安全 upgrade。回滚永不自动发生，必须
-由用户明确要求，并使用安装器输出的持久 active source 中 launcher 执行 `rollback`。
+升级时重新运行 latest installer；已有 state 会自动走安全 upgrade。启用或升级失败会在返回前恢复
+本次刚创建的备份；如进程中断留下 `E_TRANSACTION_PENDING`，运行 `recover`，仅在 journal 与当前
+文件匹配记录的前后值时恢复原事务，无需二次授权。已完成动作的回滚永不自动发生，必须由用户明确要求，
+并使用安装器输出的持久 active source 中 launcher 执行 `rollback`；它只替换精确受管 block 和
+current pointer。
 
-## 9. Required Agent report / Agent 必须回报
+## 9. Disable and uninstall / 停用与卸载
+
+Keep the plugin installed until this exact sequence succeeds: Doctor → `uninstall` → Doctor with
+`OK_NOT_ENABLED` → `codex plugin remove z-codex-router@z-codex-router --json`. `uninstall`
+validates the active payload hash, revokes only its matching `AGENTS.md` block and state, confirms
+the remaining user content, and then removes only router-managed payloads, backups, and state. On
+any conflict or failure, stop and retain the plugin and recoverable control plane. Do not delete
+an entire `AGENTS.md` or `config.toml`.
+
+必须先完成以下固定顺序，才能删除插件：Doctor → `uninstall` → Doctor 返回
+`OK_NOT_ENABLED` → `codex plugin remove z-codex-router@z-codex-router --json`。`uninstall`
+会校验 active payload 哈希，只撤销匹配的 `AGENTS.md` block 和状态，确认剩余用户内容后才清理
+受管 payload、备份和状态。任一冲突或失败都停止并保留插件与可恢复控制面；不得删除整个
+`AGENTS.md` 或 `config.toml`。
+
+## 10. Required Agent report / Agent 必须回报
 
 Report:
 

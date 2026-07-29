@@ -27,6 +27,7 @@ enum CliCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    Recover,
     Rollback,
     Uninstall,
 }
@@ -38,6 +39,7 @@ fn main() {
         CliCommand::Install => Command::Install,
         CliCommand::Doctor => Command::Doctor,
         CliCommand::Upgrade { dry_run } => Command::Upgrade { dry_run },
+        CliCommand::Recover => Command::Recover,
         CliCommand::Rollback => Command::Rollback,
         CliCommand::Uninstall => Command::Uninstall,
     };

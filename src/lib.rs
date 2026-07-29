@@ -61,6 +61,7 @@ pub enum Command {
     Install,
     Doctor,
     Upgrade { dry_run: bool },
+    Recover,
     Rollback,
     Uninstall,
 }
@@ -97,9 +98,13 @@ struct State {
     version: String,
     payload_sha256: String,
     installed_at_unix_ns: u128,
+    #[serde(default)]
+    agents_existed_before: bool,
+    #[serde(default)]
+    managed_separator: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Backup {
     agents: Option<String>,
     current: Option<String>,
@@ -110,6 +115,14 @@ struct Journal {
     protocol: u8,
     operation: String,
     backup: String,
+    #[serde(default)]
+    expected_agents_sha256: Option<String>,
+    #[serde(default)]
+    expected_current_sha256: Option<String>,
+    #[serde(default)]
+    created_version: Option<String>,
+    #[serde(default)]
+    created_payload_sha256: Option<String>,
 }
 
 #[derive(Debug)]
@@ -122,6 +135,7 @@ pub fn execute(options: Options) -> Result<Outcome> {
     let home = resolve_home(options.codex_home)?;
     match options.command {
         Command::Doctor => doctor(&home),
+        Command::Recover => recover(&home),
         Command::Rollback => rollback(&home),
         Command::Uninstall => uninstall(&home),
         Command::DryRun => install(&home, load_source(options.source)?, true, false),
@@ -487,14 +501,19 @@ fn install(
     ensure_no_pending_transaction(home)?;
     let existing_state = read_state(home)?;
     let agents_before = read_optional(&agents_path(home))?;
-    let next_state = State {
+    let mut next_state = State {
         version: source.manifest.version.clone(),
         payload_sha256: source.manifest.payload_sha256.clone(),
         installed_at_unix_ns: now_ns(),
+        agents_existed_before: agents_before.is_some(),
+        managed_separator: managed_separator(agents_before.as_deref()),
     };
 
     if let Some(current) = existing_state.as_ref() {
         ensure_managed_matches(agents_before.as_deref(), current)?;
+        validate_active_installation(home, current)?;
+        next_state.agents_existed_before = current.agents_existed_before;
+        next_state.managed_separator = current.managed_separator.clone();
         let current_version = Version::parse(&current.version).map_err(|_| {
             RouterError::coded("E_STATE_INVALID", "installed version is not semantic")
         })?;
@@ -557,23 +576,33 @@ fn install(
     }
 
     fs::create_dir_all(router_path(home))?;
-    let backup_path = create_backup(home, agents_before, read_optional(&current_path(home))?)?;
+    let backup = Backup {
+        agents: agents_before,
+        current: read_optional(&current_path(home))?,
+    };
+    let backup_path = create_backup(home, &backup)?;
+    let next_current = String::from_utf8(serde_json::to_vec_pretty(&next_state)?)
+        .map_err(|_| RouterError::coded("E_DATA", "router state cannot be encoded as UTF-8"))?;
+    let version_existed_before = versions_path(home).join(&next_state.version).exists();
     write_journal(
         home,
         if allow_upgrade { "upgrade" } else { "install" },
         &backup_path,
+        Some(&agents_after),
+        Some(&next_current),
+        (!version_existed_before).then_some(&next_state),
     )?;
     let result = (|| {
         create_immutable_version(home, &source, &next_state)?;
         atomic_write(&agents_path(home), agents_after.as_bytes())?;
-        atomic_write(
-            &current_path(home),
-            serde_json::to_vec_pretty(&next_state)?.as_slice(),
-        )?;
+        atomic_write(&current_path(home), next_current.as_bytes())?;
         Ok(())
     })();
     if let Err(error) = result {
-        let _ = restore_backup(home, &backup_path);
+        let _ = restore_backup_contents(home, &backup);
+        if !version_existed_before {
+            let _ = remove_abandoned_version(home, &next_state);
+        }
         let _ = fs::remove_file(journal_path(home));
         return Err(error);
     }
@@ -590,83 +619,271 @@ fn install(
 
 fn doctor(home: &Path) -> Result<Outcome> {
     ensure_no_pending_transaction(home)?;
-    let state = read_state(home)?
-        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state is absent"))?;
-    let version_root = versions_path(home).join(&state.version);
-    validate_payload(&version_root)?;
-    if payload_hash(&version_root)? != state.payload_sha256 {
+    let agents = read_optional(&agents_path(home))?;
+    let Some(state) = read_state(home)? else {
+        if agents
+            .as_deref()
+            .is_some_and(|text| text.contains(managed_begin()))
+        {
+            return Err(RouterError::coded(
+                "E_MANAGED_BLOCK_CONFLICT",
+                "AGENTS.md has a router managed block but router state is absent",
+            ));
+        }
+        if router_path(home).exists() {
+            return Err(RouterError::coded(
+                "E_STALE_MANAGED_ASSETS",
+                "router managed assets remain without a current state; run the uninstall skill to clean them",
+            ));
+        }
+        return Ok(outcome(
+            "doctor",
+            "OK_NOT_ENABLED",
+            None,
+            false,
+            None,
+            vec![
+                "no managed routing state is enabled; plugin registration is outside routerctl"
+                    .into(),
+            ],
+        ));
+    };
+    validate_active_installation(home, &state)?;
+    ensure_managed_matches(agents.as_deref(), &state)?;
+    Ok(outcome(
+        "doctor",
+        "OK_ENABLED",
+        Some(state.version),
+        false,
+        None,
+        vec!["managed block, payload hash, profile policy, and runtime platform are valid; config.toml is unmanaged".into()],
+    ))
+}
+
+fn recover(home: &Path) -> Result<Outcome> {
+    let (journal, backup, backup_path) = pending_transaction(home)?;
+    let expected_agents = journal.expected_agents_sha256.as_deref().ok_or_else(|| {
+        RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "pending transaction lacks safe recovery checks; do not overwrite files manually",
+        )
+    })?;
+    let expected_current = journal.expected_current_sha256.as_deref().ok_or_else(|| {
+        RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "pending transaction lacks safe recovery checks; do not overwrite files manually",
+        )
+    })?;
+    let agents_now = read_optional(&agents_path(home))?;
+    let current_now = read_optional(&current_path(home))?;
+    if !matches_transaction_value(
+        agents_now.as_deref(),
+        backup.agents.as_deref(),
+        expected_agents,
+    ) || !matches_transaction_value(
+        current_now.as_deref(),
+        backup.current.as_deref(),
+        expected_current,
+    ) {
         return Err(RouterError::coded(
-            "E_PAYLOAD_DRIFT",
-            "installed version payload hash differs from state",
+            "E_TRANSACTION_PENDING",
+            "pending transaction no longer matches its before/after values; preserve files and resolve the conflict",
         ));
     }
-    ensure_managed_matches(read_optional(&agents_path(home))?.as_deref(), &state)?;
-    Ok(outcome("doctor", "OK", Some(state.version), false, None, vec!["managed block, payload hash, profile policy, and runtime platform are valid; config.toml is unmanaged".into()]))
+    if let (Some(version), Some(payload_sha256)) = (
+        journal.created_version.as_deref(),
+        journal.created_payload_sha256.as_deref(),
+    ) {
+        remove_abandoned_version_by_identity(home, version, payload_sha256)?;
+    }
+    restore_backup_contents(home, &backup)?;
+    fs::remove_file(journal_path(home))?;
+    let restored = read_state(home)?.map(|item| item.version);
+    Ok(outcome(
+        "recover",
+        "OK_RECOVERED",
+        restored,
+        true,
+        Some(backup_path.display().to_string()),
+        vec!["restored the original transaction state after exact before/after checks".into()],
+    ))
 }
 
 fn rollback(home: &Path) -> Result<Outcome> {
-    let backup_path = match read_optional(&journal_path(home))? {
-        Some(text) => {
-            let journal: Journal = serde_json::from_str(&text).map_err(|_| {
-                RouterError::coded("E_TRANSACTION_PENDING", "transaction journal is invalid")
-            })?;
-            if journal.protocol != PROTOCOL {
-                return Err(RouterError::coded(
-                    "E_TRANSACTION_PENDING",
-                    "transaction journal protocol is unsupported",
-                ));
-            }
-            validated_backup_path(home, Path::new(&journal.backup))?
-        }
-        None => {
-            let state = read_state(home)?
-                .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state is absent"))?;
-            ensure_managed_matches(read_optional(&agents_path(home))?.as_deref(), &state)?;
-            let backup = latest_backup(home)?;
-            validated_backup_path(home, &backup)?
-        }
+    if journal_path(home).exists() {
+        return recover(home);
+    }
+    let current = read_state(home)?
+        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state is absent"))?;
+    let agents_before = read_optional(&agents_path(home))?;
+    ensure_managed_matches(agents_before.as_deref(), &current)?;
+    validate_active_installation(home, &current)?;
+    let rollback_backup_path = latest_backup(home)?;
+    let rollback_backup: Backup = serde_json::from_slice(&fs::read(&rollback_backup_path)?)?;
+    let target = match rollback_backup.current.as_deref() {
+        Some(text) => Some(serde_json::from_str::<State>(text).map_err(|_| {
+            RouterError::coded(
+                "E_STATE_INVALID",
+                "rollback backup current pointer is invalid",
+            )
+        })?),
+        None => None,
     };
-    restore_backup(home, &backup_path)?;
-    let restored = read_state(home)?.map(|item| item.version);
-    let _ = fs::remove_file(journal_path(home));
+    if let Some(target) = target.as_ref() {
+        validate_active_installation(home, target)?;
+    }
+    let agents_after = match target.as_ref() {
+        Some(target) => replace_managed(
+            agents_before.as_deref().unwrap_or_default(),
+            &current,
+            target,
+        )?,
+        None => remove_managed(agents_before.as_deref().unwrap_or_default(), &current)?,
+    };
+    let next_current = rollback_backup.current.clone();
+    let backup = Backup {
+        agents: agents_before,
+        current: read_optional(&current_path(home))?,
+    };
+    let backup_path = create_backup(home, &backup)?;
+    write_journal(
+        home,
+        "rollback",
+        &backup_path,
+        Some(&agents_after),
+        next_current.as_deref(),
+        None,
+    )?;
+    let result = (|| {
+        if !current.agents_existed_before && agents_after.is_empty() {
+            fs::remove_file(agents_path(home))?;
+        } else {
+            atomic_write(&agents_path(home), agents_after.as_bytes())?;
+        }
+        restore_optional(&current_path(home), next_current.as_deref())?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = restore_backup_contents(home, &backup);
+        let _ = fs::remove_file(journal_path(home));
+        return Err(error);
+    }
+    fs::remove_file(journal_path(home))?;
+    let restored = target.map(|state| state.version);
     Ok(outcome(
         "rollback",
         "OK",
         restored,
         true,
-        Some(backup_path.display().to_string()),
-        vec!["restored pre-transaction AGENTS.md and current pointer".into()],
+        Some(rollback_backup_path.display().to_string()),
+        vec!["replaced only the exact managed block and current pointer; user-managed AGENTS.md content was preserved".into()],
     ))
 }
 
 fn uninstall(home: &Path) -> Result<Outcome> {
     ensure_no_pending_transaction(home)?;
-    let state = read_state(home)?
-        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state is absent"))?;
+    let Some(state) = read_state(home)? else {
+        let agents = read_optional(&agents_path(home))?;
+        if agents
+            .as_deref()
+            .is_some_and(|text| text.contains(managed_begin()))
+        {
+            return Err(RouterError::coded(
+                "E_MANAGED_BLOCK_CONFLICT",
+                "AGENTS.md has a router managed block but router state is absent",
+            ));
+        }
+        let changed = cleanup_managed_assets(home)?;
+        return Ok(outcome(
+            "uninstall",
+            if changed { "OK" } else { "OK_NO_CHANGE" },
+            None,
+            changed,
+            None,
+            vec![
+                "global routing was already disabled; no user-managed AGENTS.md content changed"
+                    .into(),
+            ],
+        ));
+    };
     let agents = read_optional(&agents_path(home))?;
     ensure_managed_matches(agents.as_deref(), &state)?;
+    validate_active_installation(home, &state)?;
     let agents_after = remove_managed(agents.as_deref().unwrap_or_default(), &state)?;
-    let backup_path = create_backup(home, agents, read_optional(&current_path(home))?)?;
-    write_journal(home, "uninstall", &backup_path)?;
+    let backup = Backup {
+        agents,
+        current: read_optional(&current_path(home))?,
+    };
+    let backup_path = create_backup(home, &backup)?;
+    write_journal(
+        home,
+        "uninstall",
+        &backup_path,
+        Some(&agents_after),
+        None,
+        None,
+    )?;
     let result = (|| {
-        atomic_write(&agents_path(home), agents_after.as_bytes())?;
+        if !state.agents_existed_before && agents_after.is_empty() {
+            fs::remove_file(agents_path(home))?;
+        } else {
+            atomic_write(&agents_path(home), agents_after.as_bytes())?;
+        }
         fs::remove_file(current_path(home))?;
+        if read_optional(&agents_path(home))?
+            != if state.agents_existed_before || !agents_after.is_empty() {
+                Some(agents_after.clone())
+            } else {
+                None
+            }
+        {
+            return Err(RouterError::coded(
+                "E_IO",
+                "AGENTS.md changed while uninstalling; user content was not accepted as verified",
+            ));
+        }
+        fs::remove_file(journal_path(home))?;
+        cleanup_managed_assets(home)?;
         Ok(())
     })();
     if let Err(error) = result {
-        let _ = restore_backup(home, &backup_path);
-        let _ = fs::remove_file(journal_path(home));
+        let _ = restore_backup_contents(home, &backup);
+        let restored_backup = create_backup(home, &backup).ok();
+        if let Some(restored_backup) = restored_backup {
+            let _ = write_journal(
+                home,
+                "uninstall",
+                &restored_backup,
+                Some(&agents_after),
+                None,
+                None,
+            );
+        }
         return Err(error);
     }
-    let _ = fs::remove_file(journal_path(home));
-    Ok(outcome("uninstall", "OK", Some(state.version), true, Some(backup_path.display().to_string()), vec!["removed only the matching managed block and current pointer; immutable versions remain for audit".into()]))
+    Ok(outcome(
+        "uninstall",
+        "OK",
+        Some(state.version),
+        true,
+        None,
+        vec!["revoked only the matching managed block and state, verified user content, and cleaned router-managed assets".into()],
+    ))
 }
 
 fn append_managed(existing: Option<&str>, state: &State) -> String {
     let block = managed_block(state);
     match existing {
         None | Some("") => block,
-        Some(text) => format!("{}\n\n{block}", text.trim_end()),
+        Some(text) => format!("{text}{}{block}", state.managed_separator),
+    }
+}
+
+fn managed_separator(existing: Option<&str>) -> String {
+    match existing {
+        None | Some("") => String::new(),
+        Some(text) if text.ends_with('\n') => "\n".into(),
+        Some(_) => "\n\n".into(),
     }
 }
 
@@ -679,11 +896,13 @@ fn remove_managed(existing: &str, state: &State) -> Result<String> {
         )
     })?;
     let mut result = String::with_capacity(existing.len() - block.len());
-    result.push_str(existing[..index].trim_end());
-    result.push_str(existing[index + block.len()..].trim_start_matches('\n'));
-    if !result.is_empty() {
-        result.push('\n');
+    let before = &existing[..index];
+    if !state.managed_separator.is_empty() && before.ends_with(&state.managed_separator) {
+        result.push_str(&before[..before.len() - state.managed_separator.len()]);
+    } else {
+        result.push_str(before);
     }
+    result.push_str(&existing[index + block.len()..]);
     Ok(result)
 }
 
@@ -733,10 +952,28 @@ fn managed_begin() -> &'static str {
 }
 
 fn managed_block(state: &State) -> String {
+    let boundary = if !state.agents_existed_before && state.managed_separator.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " agents_existed_before={} separator={}",
+            state.agents_existed_before,
+            managed_separator_label(&state.managed_separator)
+        )
+    };
     format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
         state.version, state.payload_sha256
     )
+}
+
+fn managed_separator_label(separator: &str) -> &'static str {
+    match separator {
+        "" => "empty",
+        "\n" => "one-newline",
+        "\n\n" => "two-newlines",
+        _ => "invalid",
+    }
 }
 
 fn create_immutable_version(home: &Path, source: &SourceRelease, state: &State) -> Result<()> {
@@ -810,27 +1047,56 @@ fn copy_path(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_backup(home: &Path, agents: Option<String>, current: Option<String>) -> Result<PathBuf> {
+fn create_backup(home: &Path, backup: &Backup) -> Result<PathBuf> {
     let backups = router_path(home).join("backups");
     fs::create_dir_all(&backups)?;
     let path = backups.join(format!("backup-{}.json", now_ns()));
-    atomic_write(
-        &path,
-        serde_json::to_vec_pretty(&Backup { agents, current })?.as_slice(),
-    )?;
+    atomic_write(&path, serde_json::to_vec_pretty(backup)?.as_slice())?;
     Ok(path)
 }
 
-fn write_journal(home: &Path, operation: &str, backup: &Path) -> Result<()> {
+fn write_journal(
+    home: &Path,
+    operation: &str,
+    backup: &Path,
+    expected_agents: Option<&str>,
+    expected_current: Option<&str>,
+    created_state: Option<&State>,
+) -> Result<()> {
     let journal = Journal {
         protocol: PROTOCOL,
         operation: operation.into(),
         backup: backup.display().to_string(),
+        expected_agents_sha256: Some(optional_hash(expected_agents)),
+        expected_current_sha256: Some(optional_hash(expected_current)),
+        created_version: created_state.map(|state| state.version.clone()),
+        created_payload_sha256: created_state.map(|state| state.payload_sha256.clone()),
     };
     atomic_write(
         &journal_path(home),
         serde_json::to_vec_pretty(&journal)?.as_slice(),
     )
+}
+
+fn optional_hash(contents: Option<&str>) -> String {
+    let mut hasher = Sha256::new();
+    match contents {
+        Some(text) => {
+            hasher.update(b"present\0");
+            hasher.update(text.as_bytes());
+        }
+        None => hasher.update(b"absent\0"),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn matches_transaction_value(
+    actual: Option<&str>,
+    before: Option<&str>,
+    expected_after: &str,
+) -> bool {
+    let actual_hash = optional_hash(actual);
+    actual_hash == optional_hash(before) || actual_hash == expected_after
 }
 
 fn latest_backup(home: &Path) -> Result<PathBuf> {
@@ -868,10 +1134,192 @@ fn validated_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
     Ok(canonical_candidate)
 }
 
-fn restore_backup(home: &Path, backup_path: &Path) -> Result<()> {
-    let backup: Backup = serde_json::from_slice(&fs::read(backup_path)?)?;
+fn pending_transaction(home: &Path) -> Result<(Journal, Backup, PathBuf)> {
+    let text = read_optional(&journal_path(home))?.ok_or_else(|| {
+        RouterError::coded(
+            "E_NOT_INSTALLED",
+            "no interrupted router transaction is present",
+        )
+    })?;
+    let journal: Journal = serde_json::from_str(&text).map_err(|_| {
+        RouterError::coded("E_TRANSACTION_PENDING", "transaction journal is invalid")
+    })?;
+    if journal.protocol != PROTOCOL {
+        return Err(RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "transaction journal protocol is unsupported",
+        ));
+    }
+    let backup_path = validated_backup_path(home, Path::new(&journal.backup))?;
+    let backup: Backup = serde_json::from_slice(&fs::read(&backup_path)?).map_err(|_| {
+        RouterError::coded("E_TRANSACTION_PENDING", "transaction backup is invalid")
+    })?;
+    Ok((journal, backup, backup_path))
+}
+
+fn restore_backup_contents(home: &Path, backup: &Backup) -> Result<()> {
     restore_optional(&agents_path(home), backup.agents.as_deref())?;
     restore_optional(&current_path(home), backup.current.as_deref())?;
+    Ok(())
+}
+
+fn validate_active_installation(home: &Path, state: &State) -> Result<()> {
+    if Version::parse(&state.version).is_err() {
+        return Err(RouterError::coded(
+            "E_STATE_INVALID",
+            "installed version is not semantic",
+        ));
+    }
+    let version_root = versions_path(home).join(&state.version);
+    validate_payload(&version_root)?;
+    if payload_hash(&version_root)? != state.payload_sha256 {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed version payload hash differs from state",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_abandoned_version(home: &Path, state: &State) -> Result<()> {
+    remove_abandoned_version_by_identity(home, &state.version, &state.payload_sha256)
+}
+
+fn remove_abandoned_version_by_identity(
+    home: &Path,
+    version: &str,
+    payload_sha256: &str,
+) -> Result<()> {
+    if Version::parse(version).is_err() {
+        return Err(RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "pending transaction version is invalid",
+        ));
+    }
+    let root = versions_path(home).join(version);
+    if !root.exists() {
+        return Ok(());
+    }
+    let installed: State =
+        serde_json::from_slice(&fs::read(root.join("install.json"))?).map_err(|_| {
+            RouterError::coded("E_TRANSACTION_PENDING", "pending version state is invalid")
+        })?;
+    if installed.version != version || installed.payload_sha256 != payload_sha256 {
+        return Err(RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "pending version conflicts with managed assets",
+        ));
+    }
+    validate_payload(&root)?;
+    if payload_hash(&root)? != payload_sha256 {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "pending version payload hash differs from its transaction",
+        ));
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn cleanup_managed_assets(home: &Path) -> Result<bool> {
+    let root = router_path(home);
+    if !root.exists() {
+        return Ok(false);
+    }
+    let root_type = fs::symlink_metadata(&root)?;
+    if !root_type.is_dir() || root_type.file_type().is_symlink() {
+        return Err(RouterError::coded(
+            "E_MANAGED_ASSET_CONFLICT",
+            "router managed asset root is not a regular directory",
+        ));
+    }
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        match name.to_string_lossy().as_ref() {
+            "versions" => validate_version_assets(&entry.path())?,
+            "backups" => validate_backup_assets(&entry.path())?,
+            _ => {
+                return Err(RouterError::coded(
+                    "E_MANAGED_ASSET_CONFLICT",
+                    format!("unexpected managed asset {}", entry.path().display()),
+                ))
+            }
+        }
+    }
+    fs::remove_dir_all(root)?;
+    Ok(true)
+}
+
+fn validate_version_assets(versions: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(versions)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(RouterError::coded(
+            "E_MANAGED_ASSET_CONFLICT",
+            "router versions path is not a regular directory",
+        ));
+    }
+    for entry in fs::read_dir(versions)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if Version::parse(&name).is_err() || !metadata.is_dir() || metadata.file_type().is_symlink()
+        {
+            return Err(RouterError::coded(
+                "E_MANAGED_ASSET_CONFLICT",
+                format!("invalid managed version asset {}", entry.path().display()),
+            ));
+        }
+        let state: State = serde_json::from_slice(&fs::read(entry.path().join("install.json"))?)
+            .map_err(|_| {
+                RouterError::coded(
+                    "E_MANAGED_ASSET_CONFLICT",
+                    "managed version state is invalid",
+                )
+            })?;
+        if state.version != name {
+            return Err(RouterError::coded(
+                "E_MANAGED_ASSET_CONFLICT",
+                "managed version directory does not match its state",
+            ));
+        }
+        validate_payload(&entry.path())?;
+        if payload_hash(&entry.path())? != state.payload_sha256 {
+            return Err(RouterError::coded(
+                "E_PAYLOAD_DRIFT",
+                "managed version payload hash differs from its state",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_backup_assets(backups: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(backups)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(RouterError::coded(
+            "E_MANAGED_ASSET_CONFLICT",
+            "router backups path is not a regular directory",
+        ));
+    }
+    for entry in fs::read_dir(backups)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !name.starts_with("backup-")
+            || !name.ends_with(".json")
+            || !metadata.is_file()
+            || metadata.file_type().is_symlink()
+        {
+            return Err(RouterError::coded(
+                "E_MANAGED_ASSET_CONFLICT",
+                format!("invalid managed backup asset {}", entry.path().display()),
+            ));
+        }
+        serde_json::from_slice::<Backup>(&fs::read(entry.path())?).map_err(|_| {
+            RouterError::coded("E_MANAGED_ASSET_CONFLICT", "managed backup is invalid")
+        })?;
+    }
     Ok(())
 }
 
@@ -899,7 +1347,7 @@ fn ensure_no_pending_transaction(home: &Path) -> Result<()> {
     if journal_path(home).exists() {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "a previous router transaction requires rollback review",
+            "a previous router transaction requires safe recovery before another action",
         ));
     }
     Ok(())
@@ -1043,6 +1491,10 @@ mod tests {
         assert!(!again.changed);
         run(&home, Command::Uninstall, false).unwrap();
         assert_eq!(
+            fs::read_to_string(home.join("AGENTS.md")).unwrap(),
+            "# User rules\nkeep this\n"
+        );
+        assert_eq!(
             fs::read_to_string(home.join("config.toml")).unwrap(),
             config
         );
@@ -1132,10 +1584,77 @@ mod tests {
         run(&home, Command::Install, true).unwrap();
         let removed = run(&home, Command::Uninstall, false).unwrap();
         assert!(removed.changed);
+        assert!(removed.backup.is_none());
         assert!(!current_path(&home).exists());
-        assert!(!fs::read_to_string(agents_path(&home))
-            .unwrap()
-            .contains(managed_begin()));
+        assert!(!agents_path(&home).exists());
+        assert!(!router_path(&home).exists());
+        let repeated = run(&home, Command::Uninstall, false).unwrap();
+        assert_eq!(repeated.code, "OK_NO_CHANGE");
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap().code,
+            "OK_NOT_ENABLED"
+        );
+    }
+
+    #[test]
+    fn uninstall_stops_on_payload_drift_without_removing_control_plane() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        let original_agents = fs::read_to_string(agents_path(&home)).unwrap();
+        fs::write(
+            versions_path(&home).join("1.0.0/core/router.md"),
+            "user modification",
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Uninstall, false).unwrap_err().code(),
+            "E_PAYLOAD_DRIFT"
+        );
+        assert_eq!(
+            fs::read_to_string(agents_path(&home)).unwrap(),
+            original_agents
+        );
+        assert!(current_path(&home).exists());
+        assert!(router_path(&home).exists());
+    }
+
+    #[test]
+    fn uninstall_rejects_tampered_boundary_metadata_before_removing_user_content() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(agents_path(&home), "# User rule\n").unwrap();
+        run(&home, Command::Install, true).unwrap();
+        let original_agents = fs::read_to_string(agents_path(&home)).unwrap();
+        let mut current: serde_json::Value =
+            serde_json::from_slice(&fs::read(current_path(&home)).unwrap()).unwrap();
+        current["managed_separator"] = serde_json::Value::String("\n\n".into());
+        fs::write(
+            current_path(&home),
+            serde_json::to_vec_pretty(&current).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Uninstall, false).unwrap_err().code(),
+            "E_MANAGED_BLOCK_DRIFT"
+        );
+        assert_eq!(
+            fs::read_to_string(agents_path(&home)).unwrap(),
+            original_agents
+        );
+    }
+
+    #[test]
+    fn rollback_to_preinstall_state_preserves_absent_agents_file() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        run(&home, Command::Rollback, false).unwrap();
+        assert!(!agents_path(&home).exists());
+        assert!(!current_path(&home).exists());
     }
 
     #[test]
@@ -1164,15 +1683,21 @@ mod tests {
         .unwrap();
         assert_eq!(upgraded.version.as_deref(), Some("1.0.1"));
         let checked = run(&home, Command::Doctor, false).unwrap();
+        assert_eq!(checked.code, "OK_ENABLED");
         assert_eq!(checked.version.as_deref(), Some("1.0.1"));
         let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
         assert_eq!(agents.matches(managed_begin()).count(), 1);
         assert!(agents.contains("version=1.0.1"));
+        fs::write(
+            agents_path(&home),
+            format!("{agents}\n# User rule added after enable\n"),
+        )
+        .unwrap();
         let rolled_back = run(&home, Command::Rollback, false).unwrap();
         assert_eq!(rolled_back.version.as_deref(), Some("1.0.0"));
-        assert!(fs::read_to_string(home.join("AGENTS.md"))
-            .unwrap()
-            .contains("version=1.0.0"));
+        let rolled_back_agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
+        assert!(rolled_back_agents.contains("version=1.0.0"));
+        assert!(rolled_back_agents.contains("# User rule added after enable"));
     }
 
     #[test]
@@ -1183,17 +1708,118 @@ mod tests {
         run(&home, Command::Install, true).unwrap();
         let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
         let current_before = fs::read_to_string(current_path(&home)).unwrap();
-        let backup = create_backup(
+        let backup = Backup {
+            agents: Some(agents_before.clone()),
+            current: Some(current_before.clone()),
+        };
+        let backup_path = create_backup(&home, &backup).unwrap();
+        write_journal(
             &home,
-            Some(agents_before.clone()),
-            Some(current_before.clone()),
+            "upgrade",
+            &backup_path,
+            Some("partial managed write"),
+            Some("not valid json"),
+            None,
         )
         .unwrap();
-        write_journal(&home, "upgrade", &backup).unwrap();
         fs::write(agents_path(&home), "partial managed write").unwrap();
         fs::write(current_path(&home), "not valid json").unwrap();
-        let restored = run(&home, Command::Rollback, false).unwrap();
+        let restored = run(&home, Command::Recover, false).unwrap();
+        assert_eq!(restored.code, "OK_RECOVERED");
         assert_eq!(restored.version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            fs::read_to_string(agents_path(&home)).unwrap(),
+            agents_before
+        );
+        assert_eq!(
+            fs::read_to_string(current_path(&home)).unwrap(),
+            current_before
+        );
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap().code,
+            "OK_ENABLED"
+        );
+    }
+
+    #[test]
+    fn recovery_stops_when_user_content_no_longer_matches_the_transaction() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
+        let current_before = fs::read_to_string(current_path(&home)).unwrap();
+        let backup = Backup {
+            agents: Some(agents_before),
+            current: Some(current_before),
+        };
+        let backup_path = create_backup(&home, &backup).unwrap();
+        write_journal(
+            &home,
+            "upgrade",
+            &backup_path,
+            Some("expected partial write"),
+            Some("expected state"),
+            None,
+        )
+        .unwrap();
+        fs::write(agents_path(&home), "user edit after interruption").unwrap();
+        assert_eq!(
+            run(&home, Command::Recover, false).unwrap_err().code(),
+            "E_TRANSACTION_PENDING"
+        );
+        assert_eq!(
+            fs::read_to_string(agents_path(&home)).unwrap(),
+            "user edit after interruption"
+        );
+        assert!(journal_path(&home).exists());
+    }
+
+    #[test]
+    fn recovery_removes_a_verified_version_created_by_the_interrupted_transaction() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
+        let current_before = fs::read_to_string(current_path(&home)).unwrap();
+        let newer = temp.path().join("newer-source");
+        copy_path(&source_root(), &newer).unwrap();
+        let manifest_path = newer.join("release/manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = serde_json::Value::String("1.0.1".into());
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let source = load_source(Some(newer)).unwrap();
+        let next = State {
+            version: "1.0.1".into(),
+            payload_sha256: source.manifest.payload_sha256.clone(),
+            installed_at_unix_ns: now_ns(),
+            agents_existed_before: true,
+            managed_separator: "\n".into(),
+        };
+        create_immutable_version(&home, &source, &next).unwrap();
+        let backup = Backup {
+            agents: Some(agents_before.clone()),
+            current: Some(current_before.clone()),
+        };
+        let backup_path = create_backup(&home, &backup).unwrap();
+        write_journal(
+            &home,
+            "upgrade",
+            &backup_path,
+            Some(&agents_before),
+            Some(&current_before),
+            Some(&next),
+        )
+        .unwrap();
+        let recovered = run(&home, Command::Recover, false).unwrap();
+        assert_eq!(recovered.code, "OK_RECOVERED");
+        assert!(!versions_path(&home).join("1.0.1").exists());
         assert_eq!(
             fs::read_to_string(agents_path(&home)).unwrap(),
             agents_before
@@ -1216,6 +1842,10 @@ mod tests {
             protocol: PROTOCOL,
             operation: "rollback".into(),
             backup: outside.display().to_string(),
+            expected_agents_sha256: None,
+            expected_current_sha256: None,
+            created_version: None,
+            created_payload_sha256: None,
         };
         fs::create_dir_all(router_path(&home)).unwrap();
         fs::write(journal_path(&home), serde_json::to_vec(&journal).unwrap()).unwrap();
