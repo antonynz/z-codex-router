@@ -87,10 +87,21 @@ echo {"ok":true}
 exit /b 0
 "@ | Set-Content -LiteralPath $fakeCodex -Encoding Ascii
 
+    $releaseManifestPath = Join-Path (Split-Path -Parent $PSScriptRoot) `
+        "plugins/z-codex-router/release/manifest.json"
+    $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath |
+        ConvertFrom-Json
+    $releaseVersion = [string]$releaseManifest.version
+    if (-not (Test-ZcrVersion $releaseVersion)) {
+        throw "release fixture version is invalid"
+    }
+    $releaseBaseUrl = "https://fixtures.example/v$releaseVersion"
+    $wrongVersion = if ($releaseVersion -eq "1.0.0") { "1.0.1" } else { "1.0.0" }
+
     $codexHome = Join-Path $testRoot "codex-home"
     $arguments = @{
-        Version = "1.0.0"
-        BaseUrl = "https://fixtures.example/v1.0.0"
+        Version = $releaseVersion
+        BaseUrl = $releaseBaseUrl
         CodexHome = $codexHome
         CodexBinary = $fakeCodex
         Enable = $true
@@ -117,16 +128,16 @@ exit /b 0
     Set-Content -LiteralPath (Join-Path $script:FixtureRoot "SHA256SUMS") `
         -Value "$(('0' * 64))  $assetName" -Encoding Ascii
     Assert-Throws {
-        Invoke-ZcrInstall -Version "1.0.0" `
-            -BaseUrl "https://fixtures.example/v1.0.0" `
+        Invoke-ZcrInstall -Version $releaseVersion `
+            -BaseUrl $releaseBaseUrl `
             -CodexHome $negativeHome -CodexBinary $fakeCodex
     } "E_CHECKSUM_MISMATCH"
 
     Set-Content -LiteralPath (Join-Path $script:FixtureRoot "SHA256SUMS") `
         -Value "$assetHash  another-file.tar.gz" -Encoding Ascii
     Assert-Throws {
-        Invoke-ZcrInstall -Version "1.0.0" `
-            -BaseUrl "https://fixtures.example/v1.0.0" `
+        Invoke-ZcrInstall -Version $releaseVersion `
+            -BaseUrl $releaseBaseUrl `
             -CodexHome (Join-Path $testRoot "missing-sum-home") `
             -CodexBinary $fakeCodex
     } "E_CHECKSUM_ENTRY"
@@ -134,23 +145,23 @@ exit /b 0
     Set-Content -LiteralPath (Join-Path $script:FixtureRoot "SHA256SUMS") `
         -Value "$assetHash  $assetName" -Encoding Ascii
     Assert-Throws {
-        Invoke-ZcrInstall -Version "1.0.1" `
-            -BaseUrl "https://fixtures.example/v1.0.1" `
+        Invoke-ZcrInstall -Version $wrongVersion `
+            -BaseUrl "https://fixtures.example/v$wrongVersion" `
             -CodexHome (Join-Path $testRoot "wrong-version-home") `
             -CodexBinary $fakeCodex
     } "E_RELEASE_VERSION"
 
     Assert-Throws {
-        Invoke-ZcrInstall -Version "1.0.0" `
-            -BaseUrl "https://fixtures.example/v1.0.0" `
+        Invoke-ZcrInstall -Version $releaseVersion `
+            -BaseUrl $releaseBaseUrl `
             -CodexHome (Join-Path $testRoot "no-codex-home") `
             -CodexBinary (Join-Path $testRoot "missing-codex.exe")
     } "E_CODEX_MISSING"
 
     Remove-Item -LiteralPath $assetPath
     Assert-Throws {
-        Invoke-ZcrInstall -Version "1.0.0" `
-            -BaseUrl "https://fixtures.example/v1.0.0" `
+        Invoke-ZcrInstall -Version $releaseVersion `
+            -BaseUrl $releaseBaseUrl `
             -CodexHome (Join-Path $testRoot "missing-asset-home") `
             -CodexBinary $fakeCodex
     } "E_DOWNLOAD"
