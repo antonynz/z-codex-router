@@ -962,7 +962,7 @@ fn managed_block(state: &State) -> String {
         )
     };
     format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. Then read `<codex_home>/z-codex-router/current.json`, followed by `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
         state.version, state.payload_sha256
     )
 }
@@ -1474,6 +1474,52 @@ mod tests {
 
     fn fixture() -> TempDir {
         tempfile::tempdir().expect("fixture")
+    }
+
+    #[test]
+    fn managed_block_resolves_codex_home_before_router_state() {
+        let state = State {
+            version: "1.0.2".into(),
+            payload_sha256: "0".repeat(64),
+            installed_at_unix_ns: 0,
+            agents_existed_before: false,
+            managed_separator: String::new(),
+        };
+        let block = managed_block(&state);
+        assert!(block.contains("explicit `CODEX_HOME` when set"));
+        assert!(block.contains("otherwise use `~/.codex`"));
+        assert!(block.contains("Never resolve this path relative to a repository or worktree"));
+        assert!(block.contains("<codex_home>/z-codex-router/current.json"));
+        assert!(!block.contains("first read `z-codex-router/current.json`"));
+    }
+
+    #[test]
+    fn portable_router_contract_requires_exact_routes_and_c1_reroute() {
+        let router = fs::read_to_string(source_root().join("core/router.md")).unwrap();
+        for marker in [
+            "除 A0 的确定性只读外，A1、B0、B1、B2、C1、C2、C3 都要求",
+            "更高 effort 也不兼容",
+            "gpt-5.6-sol/xhigh",
+            "gpt-5.6-sol/medium",
+            "只读取非空的 `model` 与 `reasoning_effort` 两个字段",
+            "thread、session",
+            "stable profile `stable/current-gpt-5.6-reference.toml` 是本插件的唯一活动 tier 映射",
+            "A1 及以上必须创建指定的独立根",
+            "在开始领域诊断前就创建精确的",
+            "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
+            "同一任务最多自动创建一次",
+            "报告 route exception 并停止",
+            "方案固定后，必须重新分类具体实现 tier",
+            "顺序任务不应创建 sub-agent",
+            "code_writer` 只写分配的源码、测试、脚本和必要项目配置",
+            "普通仓库工作最多一个 sub-agent",
+            "最终回报至少披露 `predicted_tier`",
+        ] {
+            assert!(
+                router.contains(marker),
+                "missing routing contract: {marker}"
+            );
+        }
     }
 
     fn run(home: &Path, command: Command, source: bool) -> Result<Outcome> {

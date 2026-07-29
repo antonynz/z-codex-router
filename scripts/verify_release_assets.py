@@ -92,8 +92,8 @@ def verify_archive(path: Path, platform: str, arch: str, suffix: str) -> None:
             raise SystemExit(f"{path.name} manifests are not regular files")
         manifest = json.load(manifest_file)
         plugin = json.load(plugin_file)
-        if manifest.get("version") != "1.0.1" or plugin.get("version") != "1.0.1":
-            raise SystemExit(f"{path.name} is not version 1.0.1")
+        if manifest.get("version") != "1.0.2" or plugin.get("version") != "1.0.2":
+            raise SystemExit(f"{path.name} is not version 1.0.2")
 
 
 def main() -> None:

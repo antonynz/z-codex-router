@@ -1,3 +1,21 @@
+# Z Codex Router v1.0.2
+
+## 中文
+
+本次修复版本补齐可移植路由入口的 Codex home 解析和精确执行协议。
+
+- managed `AGENTS.md` block 先解析显式 `CODEX_HOME`，否则使用 `~/.codex`，禁止按仓库或 worktree 相对路径读取 `current.json`。
+- portable core 明确 A1/B0/B1/B2/C1/C2/C3 的 model+effort 精确匹配、更高 effort 不兼容、C1 不匹配时的独立根转交、C1 后重新分类和顺序任务不委派规则。
+- 增加内容契约回归测试，并将活动发布版本同步为 1.0.2。
+
+## English
+
+This patch fixes Codex home resolution and the exact execution protocol in the portable routing entry point.
+
+- The managed `AGENTS.md` block resolves explicit `CODEX_HOME` first, then `~/.codex`, and never reads `current.json` relative to a repository or worktree.
+- The portable core now requires exact model-and-effort matches for A1/B0/B1/B2/C1/C2/C3, rejects higher effort, defines the independent-root handoff for a C1 mismatch, reclassifies after C1, and keeps sequential work out of sub-agent delegation.
+- Added content-contract regression tests and synchronized active release metadata to 1.0.2.
+
 # Z Codex Router v1.0.1
 
 ## 中文

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2 - 2026-07-30
+
+- Resolved the Codex home before reading router state in the managed `AGENTS.md` block, with
+  explicit `CODEX_HOME` taking precedence over `~/.codex` and no repository-relative fallback.
+- Expanded the portable routing core with exact model/effort matching for all persistent tiers,
+  the C1 independent-root handoff, commentary and thread-creation protocol, post-C1
+  reclassification, and sequential-task delegation boundaries.
+- Added regression content contracts and synchronized active release metadata and asset checks.
+
 ## 1.0.1 - 2026-07-29
 
 - Added `recover-router` and `uninstall-router` skills backed by fail-closed `recover` and
