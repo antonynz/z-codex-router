@@ -11,6 +11,12 @@
   卸载前必须先显式恢复权限配置。
 - 增加无第三方依赖的活动策略链 verifier，并让 source/release asset preflight 实际调用；兼容性
   元数据明确普通 install/enable 不改 `config.toml`，只有 safe-auto opt-in 管理三个键。
+- 增加 protocol-1 父协调 route receipt：父是唯一分类 owner，`create_thread` 前写入目标 tuple、scope
+  和 acceptance，自动根创建最多一次，thread ID 只来自工具返回，子线程不重分类/递归。运行时改为
+  `verified`/`mismatch`/`unobservable` 三态；非 C3 的不可观测字段记录 requested/accepted 而非 verified，
+  C3 在不可逆动作前要求一次当前 scope/action 的 route exception，mismatch 不能绕过。
+- 增加显式同版本 `upgrade` 刷新：以 journal 记录版本目录备份并原子替换本地 1.0.2 payload，更新
+  managed block，同时不触碰 `config.toml` 或 safe-auto 三键状态。
 
 ## English
 
@@ -23,6 +29,13 @@ This patch fixes Codex home resolution and the exact execution protocol in the p
   drift detection, and crash recovery; routing uninstall requires an explicit permission restore first.
 - Added a dependency-free active policy-chain verifier and wired it into source/release-asset preflight;
   compatibility metadata now distinguishes untouched ordinary install/enable from safe-auto opt-in.
+- Added protocol-1 parent-owned route receipts: the parent alone classifies and writes the requested tuple,
+  scope, and acceptance before `create_thread`; automatic root creation is capped at one, IDs come only from
+  the tool return, and children cannot reclassify or recurse. Runtime checks are now
+  `verified`/`mismatch`/`unobservable`; non-C3 unknown fields remain requested/accepted without a verified claim,
+  while C3 blocks before irreversible work until one scoped route exception, and mismatch can never bypass it.
+- Added an explicit same-version `upgrade` refresh with a journaled version-directory backup, allowing
+  local 1.0.2 payload iterations to update the managed block without touching `config.toml` or safe-auto state.
 
 # Z Codex Router v1.0.1
 

@@ -38,6 +38,17 @@ CONTRACT_MARKERS = (
     "禁止把仓库或 worktree 当作 Codex home",
     "只读取非空的 `model` 与 `reasoning_effort` 两个字段",
     "更高 effort 也不兼容",
+    "runtime_observability=unobservable",
+    "receipt protocol 1",
+    "classification_owner=parent",
+    "creation_tool=create_thread",
+    "automatic_root_creations=1",
+    "requested/accepted，不声称 actual verified",
+    "C3/高风险",
+    "纯提示协议没有密码学防伪能力",
+    "子线程不得猜测",
+    "不重新分类本任务",
+    "自动根创建总数仍为 `<=1`",
     "在开始领域诊断前就创建精确的",
     "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
     "同一任务最多自动创建一次",
@@ -116,12 +127,37 @@ def main() -> None:
         (PLUGIN / "profiles" / "portable" / "default.toml").read_text()
     )
     preflight = portable["preflight"]
-    if any(not preflight[key] for key in (
-        "require_explicit_runtime_metadata",
-        "require_exact_route_match",
-        "require_platform_capability",
-    )):
-        fail("portable preflight is not strict")
+    if preflight.get("require_explicit_runtime_metadata") is not False or any(
+        preflight.get(key) is not True
+        for key in ("require_exact_route_match", "require_platform_capability")
+    ) or preflight.get("runtime_observability") != "three-state":
+        fail("portable preflight does not declare tri-state runtime observability")
+    if preflight.get("on_unknown") != "receipt-aware" or any(
+        preflight.get(key) != "fail-closed"
+        for key in ("on_missing_profile", "on_incompatible_profile", "on_disabled_candidate")
+    ):
+        fail("portable profile does not fail closed for invalid policy inputs")
+    receipt = portable.get("receipt", {})
+    if receipt != {
+        "protocol": 1,
+        "classification_owner": "parent",
+        "creation_tool": "create_thread",
+        "max_automatic_root_creations": 1,
+        "thread_id_source": "create_thread-return-only",
+        "child_reclassification": "forbidden",
+        "stage_reclassification": "parent-only-same-thread",
+        "invalid_or_forged": "reject",
+    }:
+        fail("portable receipt policy differs")
+    observability = portable.get("observability", {})
+    if observability != {
+        "states": ["observable", "unobservable"],
+        "observable_exact": "verified",
+        "observable_mismatch": "mismatch-fail-closed",
+        "unobservable_non_c3": "requested-accepted-unverified",
+        "unobservable_c3": "block-until-explicit-one-time-route-exception",
+    }:
+        fail("portable observability policy differs")
     if portable["selection"]["allow_candidate_as_default"] or portable["selection"]["silent_fallback"]:
         fail("portable selection permits candidate fallback")
 

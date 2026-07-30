@@ -6,13 +6,33 @@ status = "stable"
 purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
 
 [preflight]
-require_explicit_runtime_metadata = true
+## Runtime metadata is tri-state: missing fields are explicitly unobservable,
+## not a mismatch. Exact matching remains mandatory whenever fields are visible.
+require_explicit_runtime_metadata = false
 require_exact_route_match = true
 require_platform_capability = true
-on_unknown = "fail-closed"
+runtime_observability = "three-state"
+on_unknown = "receipt-aware"
 on_missing_profile = "fail-closed"
 on_incompatible_profile = "fail-closed"
 on_disabled_candidate = "fail-closed"
+
+[receipt]
+protocol = 1
+classification_owner = "parent"
+creation_tool = "create_thread"
+max_automatic_root_creations = 1
+thread_id_source = "create_thread-return-only"
+child_reclassification = "forbidden"
+stage_reclassification = "parent-only-same-thread"
+invalid_or_forged = "reject"
+
+[observability]
+states = ["observable", "unobservable"]
+observable_exact = "verified"
+observable_mismatch = "mismatch-fail-closed"
+unobservable_non_c3 = "requested-accepted-unverified"
+unobservable_c3 = "block-until-explicit-one-time-route-exception"
 
 [selection]
 stable_profile = "stable/current-gpt-5.6-reference.toml"

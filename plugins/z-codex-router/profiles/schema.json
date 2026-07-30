@@ -15,7 +15,10 @@
       }
     },
     "compatibility": {"type": "object"},
-    "routing": {"type": "object"}
+    "routing": {"type": "object"},
+    "preflight": {"type": "object"},
+    "receipt": {"type": "object"},
+    "observability": {"type": "object"}
   },
   "additionalProperties": true
 }

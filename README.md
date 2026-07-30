@@ -19,9 +19,13 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 1. **先判 tier：** A0–C3 表达副作用、任务明确度、影响面、状态复杂度与风险。
 2. **再选 mode：** Engineering、Product、Business Operations、Design、Testing 等 mode
    定义领域边界与验收证据。
-3. **精确匹配：** profile 把 tier 映射到明确的 `(model, reasoning effort)`；运行时元数据、
-   平台能力或精确组合无法验证时，报告 route exception，不猜默认值、不静默降级。
-4. **可控升级：** stable profile 与 disabled candidate 分离；新模型只有在兼容性数据、显式
+3. **父协调与 receipt：** 只有父协调根分类并在实际 `create_thread` 前写入 protocol 1
+   receipt；子线程不重分类、不递归创建，自动根创建最多一次，thread ID 只来自工具返回。
+4. **三态校验：** 可见且 exact 为 `verified`，可见不一致为 `mismatch` 并 fail closed；字段
+   缺失/接口不可用明确记为 `runtime_observability=unobservable`。非 C3 可在工具已接受目标
+   tuple 且无 reroute/failure 证据时按 requested/accepted 继续，但不声称 actual verified；C3
+   需当前 task/scope/action 的一次明确 route exception，mismatch 不能绕过。
+5. **可控升级：** stable profile 与 disabled candidate 分离；新模型只有在兼容性数据、显式
    mapping 和评估状态都通过后才会被有意启用。
 
 ![Z Codex Router 中文架构](docs/images/z-codex-router-architecture-zh.png)
@@ -117,10 +121,16 @@ packages for other platforms.
    risk.
 2. **Choose the mode:** Engineering, Product, Business Operations, Design, Testing, and other modes
    define domain boundaries and acceptance evidence.
-3. **Match exactly:** a profile maps each tier to an explicit `(model, reasoning effort)`. Missing
-   runtime metadata, platform capability, or an exact match produces a route exception—never a
-   guessed default or silent downgrade.
-4. **Upgrade deliberately:** stable and disabled candidate profiles stay separate. A new model is
+3. **Parent-owned receipts:** only the coordinating parent classifies and writes a protocol-1 receipt
+   before the real `create_thread` call. Children never reclassify or recurse, automatic root creation
+   is capped at one, and thread IDs come only from the tool return.
+4. **Three-state verification:** observable exact fields are `verified`; visible differences are
+   `mismatch` and fail closed; missing/unavailable fields are explicitly
+   `runtime_observability=unobservable`. Non-C3 work may continue as requested/accepted (without
+   claiming actual verification) only when the tool accepted the requested tuple and no reroute/failure
+   evidence is visible. C3 requires one explicit route exception scoped to the current task/scope/action;
+   mismatch can never be bypassed.
+5. **Upgrade deliberately:** stable and disabled candidate profiles stay separate. A new model is
    enabled only after compatibility evidence, an explicit mapping, and evaluation state agree.
 
 ![Z Codex Router architecture](docs/images/z-codex-router-architecture-en.png)

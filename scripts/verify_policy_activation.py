@@ -116,19 +116,43 @@ def verify_contract(plugin: Path) -> None:
     if portable.get("selection", {}).get("stable_profile") != "stable/current-gpt-5.6-reference.toml":
         fail("portable profile does not select the stable profile")
     preflight = portable.get("preflight", {})
+    if preflight.get("require_explicit_runtime_metadata") is not False:
+        fail("portable profile must treat absent runtime fields as unobservable")
     if any(preflight.get(key) is not True for key in (
-        "require_explicit_runtime_metadata",
         "require_exact_route_match",
         "require_platform_capability",
-    )):
-        fail("portable preflight is not strict")
-    if any(preflight.get(key) != "fail-closed" for key in (
-        "on_unknown",
-        "on_missing_profile",
-        "on_incompatible_profile",
-        "on_disabled_candidate",
-    )):
-        fail("portable profile does not fail closed")
+    )) or preflight.get("runtime_observability") != "three-state":
+        fail("portable preflight does not declare tri-state runtime observability")
+    if preflight.get("on_unknown") != "receipt-aware" or any(
+        preflight.get(key) != "fail-closed"
+        for key in ("on_missing_profile", "on_incompatible_profile", "on_disabled_candidate")
+    ):
+        fail("portable profile does not fail closed for invalid policy inputs")
+    receipt = portable.get("receipt", {})
+    expected_receipt = {
+        "protocol": 1,
+        "classification_owner": "parent",
+        "creation_tool": "create_thread",
+        "max_automatic_root_creations": 1,
+        "thread_id_source": "create_thread-return-only",
+        "child_reclassification": "forbidden",
+        "stage_reclassification": "parent-only-same-thread",
+        "invalid_or_forged": "reject",
+    }
+    if any(receipt.get(key) != value for key, value in expected_receipt.items()):
+        fail("portable receipt policy is incomplete")
+    observability = portable.get("observability", {})
+    expected_observability = {
+        "observable_exact": "verified",
+        "observable_mismatch": "mismatch-fail-closed",
+        "unobservable_non_c3": "requested-accepted-unverified",
+        "unobservable_c3": "block-until-explicit-one-time-route-exception",
+    }
+    if set(observability.get("states", [])) != {"observable", "unobservable"} or any(
+        observability.get(key) != value
+        for key, value in expected_observability.items()
+    ):
+        fail("portable observability policy is incomplete")
     stable = tomllib.loads((plugin / "profiles/stable/current-gpt-5.6-reference.toml").read_text())
     actual_mapping = {
         tier: (entry.get("model"), entry.get("effort"))
@@ -145,6 +169,18 @@ def verify_contract(plugin: Path) -> None:
         "core/router.md",
         "profiles/portable/default.toml",
         "更高 effort 也不兼容",
+        "runtime_observability=unobservable",
+        "receipt protocol 1",
+        "classification_owner=parent",
+        "creation_tool=create_thread",
+        "automatic_root_creations=1",
+        "requested/accepted，不声称 actual verified",
+        "C3/高风险",
+        "route exception",
+        "纯提示协议没有密码学防伪能力",
+        "子线程不得猜测",
+        "不重新分类本任务",
+        "自动根创建总数仍为 `<=1`",
         "unknown",
         "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
         "同一任务最多自动创建一次",

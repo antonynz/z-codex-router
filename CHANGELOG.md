@@ -13,6 +13,12 @@
   boundary that requires restoring permission configuration first.
 - Added an end-to-end policy activation verifier and wired it into source and release-asset preflight;
   compatibility metadata now distinguishes untouched ordinary routing from explicit safe-auto config.
+- Added protocol-1 parent-owned route receipts, a one-root creation cap, child non-reclassification,
+  create-thread-only IDs, and observable/mismatch/unobservable runtime verification. Non-C3 unknown
+  fields are explicitly requested/accepted (never claimed verified); C3 unknown fields require one
+  scoped route exception and visible mismatch remains fail closed.
+- Added an explicit same-version `upgrade` refresh with a journaled version-directory backup so local
+  1.0.2 payload iterations can update the active managed block without touching safe-auto/config.toml.
 
 ## 1.0.1 - 2026-07-29
 

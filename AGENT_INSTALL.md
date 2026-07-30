@@ -33,6 +33,15 @@ This is the deterministic install contract for an Agent that receives only:
   `safe-auto restore` (or `disable`) restores the pre-enable values. Restore it before routing
   uninstall; uninstall never guesses whether permission configuration should be removed.
 
+- Route receipt protocol 1 is a parent-only handoff: the parent writes the target tier/model/effort,
+  task scope, acceptance summary, `creation_tool=create_thread`, and
+  `automatic_root_creations=1` before creating a child. The child does not reclassify or create another
+  root; a C1-to-implementation phase update reuses the same thread. Runtime fields are tri-state:
+  exact observable values are verified, visible differences fail closed, and absent fields are
+  `runtime_observability=unobservable` rather than mismatch. Non-C3 work may continue only with a
+  receipt-backed requested/accepted tuple; C3 stops before irreversible work until the authorized user
+  grants one scoped route exception. A user-supplied or forged receipt is rejected.
+
 - 必须具备终端、HTTPS 网络和目标 Codex home 写权限。
 - 只有用户明确要求“启用全局路由”时才传 `--enable`。
 - 不传 `--enable` 时，只安装插件并执行 router dry-run。
@@ -50,6 +59,13 @@ This is the deterministic install contract for an Agent that receives only:
 - `safe-auto status` 报告 active/drift/absent，`safe-auto doctor` 在 drift 时 fail closed，
   `safe-auto restore`（或 `disable`）恢复启用前值。卸载路由前必须显式 restore；卸载不会猜测或
   自动删除权限配置。
+
+- route receipt protocol 1 只允许父协调根交接：父在创建子线程前写入 target tier/model/effort、任务范围、
+  acceptance 摘要、`creation_tool=create_thread` 和 `automatic_root_creations=1`。子线程不得重分类或再建根；
+  C1 到实现阶段沿用同一线程。运行时字段为三态：可见且 exact 才是 verified；可见不一致 fail closed；
+  缺失字段明确为 `runtime_observability=unobservable`，不能写成 mismatch。非 C3 只有 receipt-backed
+  requested/accepted 才可继续；C3 在不可逆动作前阻塞，直到具备权限的用户给出当前 scope/action 的一次
+  route exception。用户文本或伪造 receipt 一律拒绝。
 
 ## 2. Prerequisites / 前置条件
 
@@ -197,7 +213,10 @@ codex plugin add z-codex-router@z-codex-router
 ## 8. Upgrade and rollback / 升级与回滚
 
 - Upgrade: rerun the latest installer with enablement authority. If router state exists, the
-  bootstrap uses `upgrade --dry-run` and then `upgrade`; the binary rejects non-newer versions.
+  bootstrap uses `upgrade --dry-run` and then `upgrade`; the binary rejects older versions. An
+  explicit same-version `upgrade` may refresh a changed local policy payload (for example a stable
+  1.0.2 cache iteration) by journaling an atomic version-directory backup; it never changes
+  `config.toml` or the safe-auto three-key state.
 - A failed enablement or upgrade restores its own just-created backup before returning. If an
   interrupted process leaves `E_TRANSACTION_PENDING`, run `recover`: it restores only when the
   journal and current files match its recorded before/after values, and it does not need a second
@@ -213,7 +232,9 @@ codex plugin add z-codex-router@z-codex-router
   (PowerShell). It replaces only the exact managed block and current pointer; the audited version
   snapshot is printed as `ZCR_VERSION_SOURCE` or `versionSource`.
 
-升级时重新运行 latest installer；已有 state 会自动走安全 upgrade。启用或升级失败会在返回前恢复
+升级时重新运行 latest installer；已有 state 会自动走安全 upgrade。旧版本仍会被拒绝；只有显式
+`upgrade` 才允许对发生变化的同版本本地 policy payload 做带 journal 的原子目录刷新，且不改
+`config.toml` 或 safe-auto 三键状态。启用或升级失败会在返回前恢复
 本次刚创建的备份；如进程中断留下 `E_TRANSACTION_PENDING` 或 `E_SAFE_AUTO_TRANSACTION_PENDING`，
 运行 `recover`，仅在 journal 与当前文件/config 匹配记录的前后值时恢复原事务，无需二次授权；safe-auto
 事务随后运行 `safe-auto doctor` 验收，再单独运行通用 Doctor 检查路由；若路由未启用而 safe-auto active，

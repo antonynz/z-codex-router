@@ -127,6 +127,10 @@ struct Journal {
     created_version: Option<String>,
     #[serde(default)]
     created_payload_sha256: Option<String>,
+    #[serde(default)]
+    replaced_version_backup: Option<String>,
+    #[serde(default)]
+    replaced_version: Option<String>,
 }
 
 const SAFE_AUTO_KEYS: [&str; 3] = ["sandbox_mode", "approval_policy", "approvals_reviewer"];
@@ -381,30 +385,93 @@ fn validate_profiles(root: &Path) -> Result<()> {
     }
 
     let preflight = profile_table(&portable, "preflight")?;
-    for key in [
-        "require_explicit_runtime_metadata",
-        "require_exact_route_match",
-        "require_platform_capability",
+    if preflight
+        .get("require_explicit_runtime_metadata")
+        .and_then(Item::as_bool)
+        != Some(false)
+        || preflight
+            .get("require_exact_route_match")
+            .and_then(Item::as_bool)
+            != Some(true)
+        || preflight
+            .get("require_platform_capability")
+            .and_then(Item::as_bool)
+            != Some(true)
+        || preflight
+            .get("runtime_observability")
+            .and_then(Item::as_str)
+            != Some("three-state")
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile does not declare tri-state runtime preflight",
+        ));
+    }
+    if preflight.get("on_unknown").and_then(Item::as_str) != Some("receipt-aware")
+        || [
+            "on_missing_profile",
+            "on_incompatible_profile",
+            "on_disabled_candidate",
+        ]
+        .iter()
+        .any(|key| preflight.get(key).and_then(Item::as_str) != Some("fail-closed"))
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile does not fail closed for invalid policy inputs",
+        ));
+    }
+
+    let receipt = profile_table(&portable, "receipt")?;
+    if receipt.get("protocol").and_then(Item::as_integer) != Some(1)
+        || receipt.get("classification_owner").and_then(Item::as_str) != Some("parent")
+        || receipt.get("creation_tool").and_then(Item::as_str) != Some("create_thread")
+        || receipt
+            .get("max_automatic_root_creations")
+            .and_then(Item::as_integer)
+            != Some(1)
+        || receipt.get("thread_id_source").and_then(Item::as_str)
+            != Some("create_thread-return-only")
+        || receipt.get("child_reclassification").and_then(Item::as_str) != Some("forbidden")
+        || receipt.get("stage_reclassification").and_then(Item::as_str)
+            != Some("parent-only-same-thread")
+        || receipt.get("invalid_or_forged").and_then(Item::as_str) != Some("reject")
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile receipt policy is invalid",
+        ));
+    }
+    let observability = profile_table(&portable, "observability")?;
+    for (key, expected) in [
+        ("observable_exact", "verified"),
+        ("observable_mismatch", "mismatch-fail-closed"),
+        ("unobservable_non_c3", "requested-accepted-unverified"),
+        (
+            "unobservable_c3",
+            "block-until-explicit-one-time-route-exception",
+        ),
     ] {
-        if preflight.get(key).and_then(Item::as_bool) != Some(true) {
+        if observability.get(key).and_then(Item::as_str) != Some(expected) {
             return Err(RouterError::coded(
                 "E_PROFILE_INCOMPATIBLE",
-                "portable profile has a disabled preflight",
+                "portable profile observability policy is invalid",
             ));
         }
     }
-    for key in [
-        "on_unknown",
-        "on_missing_profile",
-        "on_incompatible_profile",
-        "on_disabled_candidate",
-    ] {
-        if preflight.get(key).and_then(Item::as_str) != Some("fail-closed") {
-            return Err(RouterError::coded(
-                "E_PROFILE_INCOMPATIBLE",
-                "portable profile does not fail closed",
-            ));
-        }
+    let states = observability
+        .get("states")
+        .and_then(Item::as_array)
+        .is_some_and(|items| {
+            ["observable", "unobservable"]
+                .iter()
+                .all(|expected| items.iter().any(|item| item.as_str() == Some(*expected)))
+        });
+    if !states {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile observability states are incomplete",
+        ));
     }
     let selection = profile_table(&portable, "selection")?;
     if selection.get("stable_profile").and_then(Item::as_str)
@@ -552,10 +619,9 @@ fn install(
         agents_existed_before: agents_before.is_some(),
         managed_separator: managed_separator(agents_before.as_deref()),
     };
+    let mut refresh_same_version = false;
 
     if let Some(current) = existing_state.as_ref() {
-        ensure_managed_matches(agents_before.as_deref(), current)?;
-        validate_active_installation(home, current)?;
         next_state.agents_existed_before = current.agents_existed_before;
         next_state.managed_separator = current.managed_separator.clone();
         let current_version = Version::parse(&current.version).map_err(|_| {
@@ -567,8 +633,10 @@ fn install(
         if current.version == next_state.version
             && current.payload_sha256 == next_state.payload_sha256
         {
+            ensure_managed_matches(agents_before.as_deref(), current)?;
+            validate_active_installation(home, current)?;
             return Ok(outcome(
-                "install",
+                if allow_upgrade { "upgrade" } else { "install" },
                 "OK_NO_CHANGE",
                 Some(current.version.clone()),
                 false,
@@ -580,11 +648,27 @@ fn install(
                 "E_UPGRADE_REQUIRED",
                 "a different router version is installed; use upgrade",
             ));
-        } else if next_version <= current_version {
-            return Err(RouterError::coded(
-                "E_VERSION_NOT_NEWER",
-                "source stable release is not newer than installed version",
-            ));
+        } else if current.version == next_state.version {
+            // An explicit upgrade may refresh a payload at the same public version. This is
+            // used for local 1.0.2 policy payloads and keeps safe-auto/config untouched.
+            ensure_managed_identity(agents_before.as_deref(), current)?;
+            let active_root = versions_path(home).join(&current.version);
+            if payload_hash(&active_root)? != current.payload_sha256 {
+                return Err(RouterError::coded(
+                    "E_PAYLOAD_DRIFT",
+                    "installed version payload no longer matches current.json",
+                ));
+            }
+            refresh_same_version = true;
+        } else {
+            ensure_managed_matches(agents_before.as_deref(), current)?;
+            validate_active_installation(home, current)?;
+            if next_version <= current_version {
+                return Err(RouterError::coded(
+                    "E_VERSION_NOT_NEWER",
+                    "source stable release is not newer than installed version",
+                ));
+            }
         }
     } else if agents_before
         .as_deref()
@@ -597,6 +681,11 @@ fn install(
     }
 
     let agents_after = match existing_state.as_ref() {
+        Some(previous) if refresh_same_version => replace_managed_by_identity(
+            agents_before.as_deref().unwrap_or_default(),
+            previous,
+            &next_state,
+        )?,
         Some(previous) => replace_managed(
             agents_before.as_deref().unwrap_or_default(),
             previous,
@@ -625,30 +714,47 @@ fn install(
         current: read_optional(&current_path(home))?,
     };
     let backup_path = create_backup(home, &backup)?;
+    let replaced_version_backup = if refresh_same_version {
+        Some(create_version_backup(home, &next_state.version)?)
+    } else {
+        None
+    };
     let next_current = String::from_utf8(serde_json::to_vec_pretty(&next_state)?)
         .map_err(|_| RouterError::coded("E_DATA", "router state cannot be encoded as UTF-8"))?;
     let version_existed_before = versions_path(home).join(&next_state.version).exists();
-    write_journal(
+    if let Err(error) = write_journal_with_replaced_version(
         home,
         if allow_upgrade { "upgrade" } else { "install" },
         &backup_path,
         Some(&agents_after),
         Some(&next_current),
-        (!version_existed_before).then_some(&next_state),
-    )?;
+        (!version_existed_before && !refresh_same_version).then_some(&next_state),
+        replaced_version_backup.as_deref(),
+        refresh_same_version.then_some(next_state.version.as_str()),
+    ) {
+        if let Some(version_backup) = replaced_version_backup.as_deref() {
+            let _ = fs::remove_dir_all(version_backup);
+        }
+        return Err(error);
+    }
     let result = (|| {
-        create_immutable_version(home, &source, &next_state)?;
+        create_immutable_version(home, &source, &next_state, refresh_same_version)?;
         atomic_write(&agents_path(home), agents_after.as_bytes())?;
         atomic_write(&current_path(home), next_current.as_bytes())?;
         Ok(())
     })();
     if let Err(error) = result {
         let _ = restore_backup_contents(home, &backup);
-        if !version_existed_before {
+        if let Some(version_backup) = replaced_version_backup.as_deref() {
+            let _ = restore_version_backup(home, version_backup, &next_state.version);
+        } else if !version_existed_before {
             let _ = remove_abandoned_version(home, &next_state);
         }
         let _ = fs::remove_file(journal_path(home));
         return Err(error);
+    }
+    if let Some(version_backup) = replaced_version_backup.as_deref() {
+        let _ = fs::remove_dir_all(version_backup);
     }
     let _ = fs::remove_file(journal_path(home));
     Ok(outcome(
@@ -768,6 +874,16 @@ fn recover(home: &Path) -> Result<Outcome> {
         journal.created_payload_sha256.as_deref(),
     ) {
         remove_abandoned_version_by_identity(home, version, payload_sha256)?;
+    }
+    if let Some(version_backup) = journal.replaced_version_backup.as_deref() {
+        let backup = validated_version_backup_path(home, Path::new(version_backup))?;
+        let version = journal.replaced_version.clone().ok_or_else(|| {
+            RouterError::coded(
+                "E_TRANSACTION_PENDING",
+                "replaced version backup has no recoverable version identity",
+            )
+        })?;
+        restore_version_backup(home, &backup, &version)?;
     }
     restore_backup_contents(home, &backup)?;
     fs::remove_file(journal_path(home))?;
@@ -1411,6 +1527,53 @@ fn replace_managed(existing: &str, previous: &State, next: &State) -> Result<Str
     Ok(replaced)
 }
 
+fn replace_managed_by_identity(existing: &str, previous: &State, next: &State) -> Result<String> {
+    let identity = format!(
+        "id={ROUTER_ID} version={} sha256={}",
+        previous.version, previous.payload_sha256
+    );
+    if existing.matches(managed_begin()).count() != 1 || !existing.contains(&identity) {
+        return Err(RouterError::coded(
+            "E_MANAGED_BLOCK_DRIFT",
+            "managed AGENTS.md block identity is not byte-for-byte intact",
+        ));
+    }
+    let begin = existing.find(managed_begin()).ok_or_else(|| {
+        RouterError::coded("E_MANAGED_BLOCK_DRIFT", "managed AGENTS.md block is absent")
+    })?;
+    let end_marker = format!("<!-- z-codex-router:end id={ROUTER_ID} -->");
+    let end = existing[begin..]
+        .find(&end_marker)
+        .map(|offset| begin + offset + end_marker.len())
+        .ok_or_else(|| {
+            RouterError::coded(
+                "E_MANAGED_BLOCK_DRIFT",
+                "managed AGENTS.md block is truncated",
+            )
+        })?;
+    let mut replaced = String::with_capacity(existing.len() + managed_block(next).len());
+    replaced.push_str(&existing[..begin]);
+    replaced.push_str(&managed_block(next));
+    replaced.push_str(&existing[end..]);
+    Ok(replaced)
+}
+
+fn ensure_managed_identity(existing: Option<&str>, state: &State) -> Result<()> {
+    let text = existing
+        .ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "AGENTS.md is missing"))?;
+    let identity = format!(
+        "id={ROUTER_ID} version={} sha256={}",
+        state.version, state.payload_sha256
+    );
+    if text.matches(managed_begin()).count() == 1 && text.contains(&identity) {
+        return Ok(());
+    }
+    Err(RouterError::coded(
+        "E_MANAGED_BLOCK_DRIFT",
+        "managed AGENTS.md block identity is invalid",
+    ))
+}
+
 fn ensure_managed_matches(existing: Option<&str>, state: &State) -> Result<()> {
     let text = existing
         .ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "AGENTS.md is missing"))?;
@@ -1445,7 +1608,7 @@ fn managed_block(state: &State) -> String {
         )
     };
     format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. Then read `<codex_home>/z-codex-router/current.json`, followed by `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. Then read `<codex_home>/z-codex-router/current.json`, followed by `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority. Runtime metadata is tri-state: exact observable fields are verified, visible differences are mismatch and fail closed, and missing fields are runtime_observability=unobservable. Route receipt protocol 1 is parent-owned: only the real create_thread caller may classify and create it, automatic root creation is at most one, child threads do not reclassify or recurse, and thread IDs come only from the tool return.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
         state.version, state.payload_sha256
     )
 }
@@ -1459,7 +1622,12 @@ fn managed_separator_label(separator: &str) -> &'static str {
     }
 }
 
-fn create_immutable_version(home: &Path, source: &SourceRelease, state: &State) -> Result<()> {
+fn create_immutable_version(
+    home: &Path,
+    source: &SourceRelease,
+    state: &State,
+    replace_existing: bool,
+) -> Result<()> {
     let versions = versions_path(home);
     fs::create_dir_all(&versions)?;
     let destination = versions.join(&state.version);
@@ -1468,10 +1636,13 @@ fn create_immutable_version(home: &Path, source: &SourceRelease, state: &State) 
         if actual == state.payload_sha256 {
             return Ok(());
         }
-        return Err(RouterError::coded(
-            "E_IMMUTABLE_VERSION_CONFLICT",
-            "existing version directory has a different payload",
-        ));
+        if !replace_existing {
+            return Err(RouterError::coded(
+                "E_IMMUTABLE_VERSION_CONFLICT",
+                "existing version directory has a different payload",
+            ));
+        }
+        fs::remove_dir_all(&destination)?;
     }
     let staging = versions.join(format!(".staging-{}-{}", state.version, now_ns()));
     fs::create_dir_all(&staging)?;
@@ -1538,6 +1709,30 @@ fn create_backup(home: &Path, backup: &Backup) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn create_version_backup(home: &Path, version: &str) -> Result<PathBuf> {
+    let source = versions_path(home).join(version);
+    if !source.is_dir() {
+        return Err(RouterError::coded(
+            "E_STATE_INVALID",
+            "installed version directory is missing",
+        ));
+    }
+    let backups = router_path(home).join("backups/versions");
+    fs::create_dir_all(&backups)?;
+    let destination = backups.join(format!("backup-{}-{}", now_ns(), version));
+    copy_path(&source, &destination)?;
+    Ok(destination)
+}
+
+fn restore_version_backup(home: &Path, backup: &Path, version: &str) -> Result<()> {
+    let destination = versions_path(home).join(version);
+    if destination.exists() {
+        fs::remove_dir_all(&destination)?;
+    }
+    fs::rename(backup, destination)?;
+    Ok(())
+}
+
 fn write_journal(
     home: &Path,
     operation: &str,
@@ -1545,6 +1740,31 @@ fn write_journal(
     expected_agents: Option<&str>,
     expected_current: Option<&str>,
     created_state: Option<&State>,
+) -> Result<()> {
+    write_journal_with_replaced_version(
+        home,
+        operation,
+        backup,
+        expected_agents,
+        expected_current,
+        created_state,
+        None,
+        None,
+    )
+}
+
+// The journal fields mirror the on-disk transaction contract; keeping them explicit
+// makes each call site auditable and avoids an unvalidated options map.
+#[allow(clippy::too_many_arguments)]
+fn write_journal_with_replaced_version(
+    home: &Path,
+    operation: &str,
+    backup: &Path,
+    expected_agents: Option<&str>,
+    expected_current: Option<&str>,
+    created_state: Option<&State>,
+    replaced_version_backup: Option<&Path>,
+    replaced_version: Option<&str>,
 ) -> Result<()> {
     let journal = Journal {
         protocol: PROTOCOL,
@@ -1554,6 +1774,8 @@ fn write_journal(
         expected_current_sha256: Some(optional_hash(expected_current)),
         created_version: created_state.map(|state| state.version.clone()),
         created_payload_sha256: created_state.map(|state| state.payload_sha256.clone()),
+        replaced_version_backup: replaced_version_backup.map(|path| path.display().to_string()),
+        replaced_version: replaced_version.map(str::to_owned),
     };
     atomic_write(
         &journal_path(home),
@@ -1612,6 +1834,25 @@ fn validated_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
             "journal backup escapes the managed backup directory",
+        ));
+    }
+    Ok(canonical_candidate)
+}
+
+fn validated_version_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
+    let root = router_path(home).join("backups/versions");
+    let canonical_root = fs::canonicalize(&root).map_err(|_| {
+        RouterError::coded("E_TRANSACTION_PENDING", "version backup root is missing")
+    })?;
+    let canonical_candidate = fs::canonicalize(candidate)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "version backup is missing"))?;
+    let is_backup = canonical_candidate
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("backup-"));
+    if !canonical_candidate.starts_with(&canonical_root) || !is_backup {
+        return Err(RouterError::coded(
+            "E_TRANSACTION_PENDING",
+            "version backup escapes the managed backup directory",
         ));
     }
     Ok(canonical_candidate)
@@ -1989,14 +2230,23 @@ mod tests {
     fn portable_router_contract_requires_exact_routes_and_c1_reroute() {
         let router = fs::read_to_string(source_root().join("core/router.md")).unwrap();
         for marker in [
-            "除 A0 的确定性只读外，A1、B0、B1、B2、C1、C2、C3 都要求",
             "更高 effort 也不兼容",
             "gpt-5.6-sol/xhigh",
             "gpt-5.6-sol/medium",
             "只读取非空的 `model` 与 `reasoning_effort` 两个字段",
+            "runtime_observability=unobservable",
+            "receipt protocol 1",
+            "classification_owner=parent",
+            "creation_tool=create_thread",
+            "automatic_root_creations=1",
+            "requested/accepted，不声称 actual verified",
+            "C3/高风险",
+            "纯提示协议没有密码学防伪能力",
+            "子线程不得猜测",
+            "不重新分类本任务",
+            "自动根创建总数仍为 `<=1`",
             "thread、session",
             "stable profile `stable/current-gpt-5.6-reference.toml` 是本插件的唯一活动 tier 映射",
-            "A1 及以上必须创建指定的独立根",
             "在开始领域诊断前就创建精确的",
             "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
             "同一任务最多自动创建一次",
@@ -2256,6 +2506,53 @@ mod tests {
     }
 
     #[test]
+    fn same_version_refresh_replaces_payload_without_touching_safe_auto() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        let config_before = fs::read(home.join("config.toml")).unwrap();
+        let safe_auto_before = fs::read(safe_auto_state_path(&home)).unwrap();
+
+        let variant = temp.path().join("same-version-variant");
+        copy_path(&source_root(), &variant).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(variant.join("core/router.md"))
+            .unwrap()
+            .write_all(b"\n<!-- same-version refresh fixture -->\n")
+            .unwrap();
+        let payload_sha256 = payload_hash(&variant).unwrap();
+        let manifest_path = variant.join("release/manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["payloadSha256"] = serde_json::Value::String(payload_sha256.clone());
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+
+        let refreshed = execute(Options {
+            source: Some(variant),
+            codex_home: Some(home.clone()),
+            command: Command::Upgrade { dry_run: false },
+        })
+        .unwrap();
+        assert_eq!(refreshed.version.as_deref(), Some("1.0.2"));
+        assert_eq!(
+            read_state(&home).unwrap().unwrap().payload_sha256,
+            payload_sha256
+        );
+        assert_eq!(fs::read(home.join("config.toml")).unwrap(), config_before);
+        assert_eq!(
+            fs::read(safe_auto_state_path(&home)).unwrap(),
+            safe_auto_before
+        );
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap().code,
+            "OK_ENABLED"
+        );
+    }
+
+    #[test]
     fn pending_journal_restores_after_partial_write() {
         let temp = fixture();
         let home = temp.path().join("fixture-codex");
@@ -2357,7 +2654,7 @@ mod tests {
             agents_existed_before: true,
             managed_separator: "\n".into(),
         };
-        create_immutable_version(&home, &source, &next).unwrap();
+        create_immutable_version(&home, &source, &next, false).unwrap();
         let backup = Backup {
             agents: Some(agents_before.clone()),
             current: Some(current_before.clone()),
@@ -2401,6 +2698,8 @@ mod tests {
             expected_current_sha256: None,
             created_version: None,
             created_payload_sha256: None,
+            replaced_version_backup: None,
+            replaced_version: None,
         };
         fs::create_dir_all(router_path(&home)).unwrap();
         fs::write(journal_path(&home), serde_json::to_vec(&journal).unwrap()).unwrap();

@@ -26,7 +26,8 @@
       "Validation",
       "Recovery",
       "Safe uninstallation",
-      "Explicit safe-auto approval opt-in"
+      "Explicit safe-auto approval opt-in",
+      "Parent-owned route receipts and tri-state runtime verification"
     ],
     "websiteURL": "https://github.com/antonynz/z-codex-router",
     "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
@@ -34,6 +35,7 @@
     "defaultPrompt": [
       "Install and enable Z Codex Router globally.",
       "Check my Z Codex Router installation.",
+      "Validate a parent-owned route receipt and runtime observability boundary.",
       "Only when I explicitly ask, enable, check, or restore Z Codex Router's safe-auto approval policy without widening its sandbox or human-authorization boundary.",
       "Safely recover Z Codex Router after a failed action.",
       "Safely disable and uninstall Z Codex Router."
