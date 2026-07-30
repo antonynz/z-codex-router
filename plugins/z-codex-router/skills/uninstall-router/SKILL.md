@@ -8,6 +8,9 @@ description: Safely disable and uninstall Z Codex Router while preserving user-m
 Keep the plugin and its launcher available until routerctl has completed every control-plane check.
 Do not delete `AGENTS.md`, `config.toml`, marketplace sources, or user content manually.
 
+If `safe-auto` is active, run `safe-auto doctor` and then `safe-auto restore` first. Routing uninstall
+refuses to guess whether the user still wants the three permission keys and never removes them implicitly.
+
 1. Run `doctor` with `../../scripts/routerctl.sh` on macOS/Linux or
    `../../scripts/routerctl.ps1` on Windows. If it reports a conflict, drift, pending transaction,
    permission, path, or compatibility error, stop. Keep the plugin and control plane intact.

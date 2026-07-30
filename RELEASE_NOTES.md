@@ -7,6 +7,10 @@
 - managed `AGENTS.md` block 先解析显式 `CODEX_HOME`，否则使用 `~/.codex`，禁止按仓库或 worktree 相对路径读取 `current.json`。
 - portable core 明确 A1/B0/B1/B2/C1/C2/C3 的 model+effort 精确匹配、更高 effort 不兼容、C1 不匹配时的独立根转交、C1 后重新分类和顺序任务不委派规则。
 - 增加内容契约回归测试，并将活动发布版本同步为 1.0.2。
+- 增加明确 opt-in 的 `safe-auto` 三键策略：原子、幂等、键级恢复、drift 检测和中断恢复；路由
+  卸载前必须先显式恢复权限配置。
+- 增加无第三方依赖的活动策略链 verifier，并让 source/release asset preflight 实际调用；兼容性
+  元数据明确普通 install/enable 不改 `config.toml`，只有 safe-auto opt-in 管理三个键。
 
 ## English
 
@@ -15,6 +19,10 @@ This patch fixes Codex home resolution and the exact execution protocol in the p
 - The managed `AGENTS.md` block resolves explicit `CODEX_HOME` first, then `~/.codex`, and never reads `current.json` relative to a repository or worktree.
 - The portable core now requires exact model-and-effort matches for A1/B0/B1/B2/C1/C2/C3, rejects higher effort, defines the independent-root handoff for a C1 mismatch, reclassifies after C1, and keeps sequential work out of sub-agent delegation.
 - Added content-contract regression tests and synchronized active release metadata to 1.0.2.
+- Added an explicit opt-in `safe-auto` three-key policy with atomic/idempotent writes, key-level restore,
+  drift detection, and crash recovery; routing uninstall requires an explicit permission restore first.
+- Added a dependency-free active policy-chain verifier and wired it into source/release-asset preflight;
+  compatibility metadata now distinguishes untouched ordinary install/enable from safe-auto opt-in.
 
 # Z Codex Router v1.0.1
 

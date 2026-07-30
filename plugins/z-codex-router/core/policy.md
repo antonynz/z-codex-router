@@ -4,7 +4,15 @@
 
 - 写入前说明目标、读取输入、dry-run、计划变更、回滚边界和验收。
 - 只管理具有稳定 ID、版本和哈希的内容；保留未知键、注释、用户块和无关文件。
-- 1.0.0 不读取、创建、验证或重写 `config.toml`；全局入口只使用受管 `AGENTS.md` 块和 `z-codex-router/current.json`。未来版本如需配置合并，必须先证明能保留未知键、注释与所有权。
+- 普通安装与路由 enable 不读取或修改 `config.toml`。只有用户明确调用 `safe-auto enable` 才管理
+  `sandbox_mode`、`approval_policy`、`approvals_reviewer` 三个顶层键；启用前保存每个键的原值/缺失状态，
+  原子写入并幂等。restore 只恢复这三个键，保留用户之后新增或修改的其他键；检测到 managed-key
+  drift、重复 TOML key 或事务 hash 漂移时 fail closed。safe-auto 必须在路由 uninstall 前显式 restore，
+  路由卸载不会自动删除或回写用户权限配置。
+- `approvals_reviewer = "auto_review"` 只替换符合条件的 reviewer；不扩大 `sandbox_mode = "workspace-write"`，
+  不替代 Computer Use、凭证、支付、签署、发布、生产变更或其他不可逆外部动作的人类授权。
+- `recover` 同时处理路由 `E_TRANSACTION_PENDING` 与 safe-auto `E_SAFE_AUTO_TRANSACTION_PENDING`；
+  safe-auto journal 的 before/after hash 未知或发生用户漂移时必须保留配置并停止。
 - 版本目录不可变；current pointer 必须原子切换；事务先写 journal 和备份；同版本重复安装零 diff；卸载只删除 ID/哈希均匹配的受管内容。
 
 ## 失败处理

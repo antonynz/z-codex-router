@@ -2,7 +2,7 @@ use directories::BaseDirs;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -64,6 +64,10 @@ pub enum Command {
     Recover,
     Rollback,
     Uninstall,
+    SafeAutoEnable,
+    SafeAutoRestore,
+    SafeAutoStatus,
+    SafeAutoDoctor,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +129,33 @@ struct Journal {
     created_payload_sha256: Option<String>,
 }
 
+const SAFE_AUTO_KEYS: [&str; 3] = ["sandbox_mode", "approval_policy", "approvals_reviewer"];
+const SAFE_AUTO_VALUES: [&str; 3] = ["workspace-write", "on-request", "auto_review"];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SafeAutoState {
+    protocol: u8,
+    config_existed_before: bool,
+    original: BTreeMap<String, Option<String>>,
+    managed: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SafeAutoJournal {
+    protocol: u8,
+    operation: String,
+    before_hash: String,
+    after_hash: String,
+    state: SafeAutoState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SafeAutoStatus {
+    Active,
+    Drift,
+    Absent,
+}
+
 #[derive(Debug)]
 struct SourceRelease {
     root: PathBuf,
@@ -141,6 +172,10 @@ pub fn execute(options: Options) -> Result<Outcome> {
         Command::DryRun => install(&home, load_source(options.source)?, true, false),
         Command::Install => install(&home, load_source(options.source)?, false, false),
         Command::Upgrade { dry_run } => install(&home, load_source(options.source)?, dry_run, true),
+        Command::SafeAutoEnable => safe_auto_enable(&home),
+        Command::SafeAutoRestore => safe_auto_restore(&home),
+        Command::SafeAutoStatus => safe_auto_status(&home),
+        Command::SafeAutoDoctor => safe_auto_doctor(&home),
     }
 }
 
@@ -250,6 +285,15 @@ fn validate_payload(root: &Path) -> Result<()> {
     validate_profiles(root)?;
     let compatibility: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("compatibility.json"))?)?;
+    let config_contract = &compatibility["installer"]["configToml"];
+    if config_contract["ordinaryInstallAndRoutingEnable"] != "untouched"
+        || config_contract["safeAutoApproval"] != "explicit-opt-in-three-keys"
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "compatibility metadata does not describe the safe-auto config boundary",
+        ));
+    }
     let supported = compatibility["runtime"]["platforms"]
         .as_array()
         .is_some_and(|items| {
@@ -619,8 +663,24 @@ fn install(
 
 fn doctor(home: &Path) -> Result<Outcome> {
     ensure_no_pending_transaction(home)?;
+    ensure_no_safe_auto_transaction(home)?;
     let agents = read_optional(&agents_path(home))?;
     let Some(state) = read_state(home)? else {
+        match evaluate_safe_auto(home)? {
+            SafeAutoStatus::Active => {
+                return Err(RouterError::coded(
+                    "E_SAFE_AUTO_ACTIVE",
+                    "safe-auto approval policy is active without an installed router; run `safe-auto restore` before cleanup",
+                ))
+            }
+            SafeAutoStatus::Drift => {
+                return Err(RouterError::coded(
+                    "E_SAFE_AUTO_DRIFT",
+                    "safe-auto state exists but managed keys changed",
+                ))
+            }
+            SafeAutoStatus::Absent => {}
+        }
         if agents
             .as_deref()
             .is_some_and(|text| text.contains(managed_begin()))
@@ -650,17 +710,30 @@ fn doctor(home: &Path) -> Result<Outcome> {
     };
     validate_active_installation(home, &state)?;
     ensure_managed_matches(agents.as_deref(), &state)?;
+    let safe_detail = match evaluate_safe_auto(home)? {
+        SafeAutoStatus::Active => "safe-auto=active",
+        SafeAutoStatus::Absent => "safe-auto=absent",
+        SafeAutoStatus::Drift => {
+            return Err(RouterError::coded(
+                "E_SAFE_AUTO_DRIFT",
+                "safe-auto managed keys changed after enablement; run safe-auto status and restore only after resolving the user edit",
+            ))
+        }
+    };
     Ok(outcome(
         "doctor",
         "OK_ENABLED",
         Some(state.version),
         false,
         None,
-        vec!["managed block, payload hash, profile policy, and runtime platform are valid; config.toml is unmanaged".into()],
+        vec![format!("managed block, payload hash, profile policy, and runtime platform are valid; {safe_detail}")],
     ))
 }
 
 fn recover(home: &Path) -> Result<Outcome> {
+    if safe_auto_journal_path(home).exists() && !journal_path(home).exists() {
+        return safe_auto_recover(home);
+    }
     let (journal, backup, backup_path) = pending_transaction(home)?;
     let expected_agents = journal.expected_agents_sha256.as_deref().ok_or_else(|| {
         RouterError::coded(
@@ -782,6 +855,12 @@ fn rollback(home: &Path) -> Result<Outcome> {
 
 fn uninstall(home: &Path) -> Result<Outcome> {
     ensure_no_pending_transaction(home)?;
+    if safe_auto_state_path(home).exists() || safe_auto_journal_path(home).exists() {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_ACTIVE",
+            "safe-auto approval policy is still managed; run `safe-auto restore` before uninstall",
+        ));
+    }
     let Some(state) = read_state(home)? else {
         let agents = read_optional(&agents_path(home))?;
         if agents
@@ -869,6 +948,410 @@ fn uninstall(home: &Path) -> Result<Outcome> {
         None,
         vec!["revoked only the matching managed block and state, verified user content, and cleaned router-managed assets".into()],
     ))
+}
+
+fn safe_auto_enable(home: &Path) -> Result<Outcome> {
+    ensure_no_pending_transaction(home)?;
+    ensure_no_safe_auto_transaction(home)?;
+    let current = read_optional(&config_path(home))?;
+    let document = parse_config(current.as_deref())?;
+    if let Some(state) = read_safe_auto_state(home)? {
+        ensure_safe_auto_active(&document, &state)?;
+        return Ok(outcome(
+            "safe-auto-enable",
+            "OK_NO_CHANGE",
+            None,
+            false,
+            Some(safe_auto_state_path(home).display().to_string()),
+            vec!["safe-auto approval policy is already active and unchanged".into()],
+        ));
+    }
+    let original = snapshot_safe_auto_values(&document)?;
+    let mut next = document;
+    for (key, value) in SAFE_AUTO_KEYS.iter().zip(SAFE_AUTO_VALUES) {
+        next[*key] = toml_edit::value(value);
+    }
+    let after = next.to_string();
+    let state = SafeAutoState {
+        protocol: PROTOCOL,
+        config_existed_before: current.is_some(),
+        original,
+        managed: managed_safe_auto_values(),
+    };
+    let journal = SafeAutoJournal {
+        protocol: PROTOCOL,
+        operation: "enable".into(),
+        before_hash: optional_hash(current.as_deref()),
+        after_hash: optional_hash(Some(&after)),
+        state: state.clone(),
+    };
+    if read_optional(&config_path(home))? != current {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_DRIFT",
+            "config.toml changed while preparing safe-auto enablement; refusing to overwrite it",
+        ));
+    }
+    atomic_write(
+        &safe_auto_journal_path(home),
+        serde_json::to_vec_pretty(&journal)?.as_slice(),
+    )?;
+    let write_result: Result<()> = (|| {
+        atomic_write(&config_path(home), after.as_bytes())?;
+        atomic_write(
+            &safe_auto_state_path(home),
+            serde_json::to_vec_pretty(&state)?.as_slice(),
+        )?;
+        Ok(())
+    })();
+    write_result?;
+    fs::remove_file(safe_auto_journal_path(home))?;
+    Ok(outcome(
+        "safe-auto-enable",
+        "OK",
+        None,
+        true,
+        Some(safe_auto_state_path(home).display().to_string()),
+        vec![
+            "wrote only sandbox_mode, approval_policy, and approvals_reviewer".into(),
+            "sandbox remains workspace-write; auto-review replaces only the eligible reviewer".into(),
+            "user authorization is still required for Computer Use, credentials, and high-risk or irreversible external actions".into(),
+        ],
+    ))
+}
+
+fn safe_auto_restore(home: &Path) -> Result<Outcome> {
+    ensure_no_pending_transaction(home)?;
+    ensure_no_safe_auto_transaction(home)?;
+    let Some(state) = read_safe_auto_state(home)? else {
+        return Ok(outcome(
+            "safe-auto-restore",
+            "OK_NO_CHANGE",
+            None,
+            false,
+            None,
+            vec!["safe-auto approval policy is absent; no configuration was changed".into()],
+        ));
+    };
+    let current = read_optional(&config_path(home))?;
+    let document = parse_config(current.as_deref())?;
+    ensure_safe_auto_active(&document, &state)?;
+    let restored = restore_safe_auto_document(document, &state)?;
+    let restored_text = restored.map(|document| document.to_string());
+    let journal = SafeAutoJournal {
+        protocol: PROTOCOL,
+        operation: "restore".into(),
+        before_hash: optional_hash(current.as_deref()),
+        after_hash: optional_hash(restored_text.as_deref()),
+        state: state.clone(),
+    };
+    if read_optional(&config_path(home))? != current {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_DRIFT",
+            "config.toml changed while preparing safe-auto restore; refusing to overwrite it",
+        ));
+    }
+    atomic_write(
+        &safe_auto_journal_path(home),
+        serde_json::to_vec_pretty(&journal)?.as_slice(),
+    )?;
+    restore_optional(&config_path(home), restored_text.as_deref())?;
+    fs::remove_file(safe_auto_state_path(home))?;
+    fs::remove_file(safe_auto_journal_path(home))?;
+    Ok(outcome(
+        "safe-auto-restore",
+        "OK",
+        None,
+        true,
+        None,
+        vec![
+            "restored only the three managed keys and preserved unrelated config content".into(),
+            "router uninstall remains separate; restore safe-auto before uninstalling routing"
+                .into(),
+        ],
+    ))
+}
+
+fn safe_auto_status(home: &Path) -> Result<Outcome> {
+    if safe_auto_journal_path(home).exists() {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_TRANSACTION_PENDING",
+            "safe-auto has an interrupted transaction; run `recover` before another action",
+        ));
+    }
+    let status = evaluate_safe_auto(home)?;
+    let (code, detail) = match status {
+        SafeAutoStatus::Active => ("SAFE_AUTO_ACTIVE", "safe-auto approval policy is active"),
+        SafeAutoStatus::Drift => (
+            "SAFE_AUTO_DRIFT",
+            "safe-auto state exists but one or more managed keys changed",
+        ),
+        SafeAutoStatus::Absent => (
+            "SAFE_AUTO_ABSENT",
+            "safe-auto approval policy is not managed; configuration was not changed",
+        ),
+    };
+    Ok(outcome(
+        "safe-auto-status",
+        code,
+        None,
+        false,
+        read_safe_auto_state(home)?.map(|_| safe_auto_state_path(home).display().to_string()),
+        vec![detail.into()],
+    ))
+}
+
+fn safe_auto_doctor(home: &Path) -> Result<Outcome> {
+    ensure_no_pending_transaction(home)?;
+    ensure_no_safe_auto_transaction(home)?;
+    match evaluate_safe_auto(home)? {
+        SafeAutoStatus::Active => Ok(outcome(
+            "safe-auto-doctor",
+            "OK_ACTIVE",
+            None,
+            false,
+            Some(safe_auto_state_path(home).display().to_string()),
+            vec!["managed three-key policy is present and unchanged".into()],
+        )),
+        SafeAutoStatus::Absent => Ok(outcome(
+            "safe-auto-doctor",
+            "OK_ABSENT",
+            None,
+            false,
+            None,
+            vec!["safe-auto is not enabled; no permission configuration is managed".into()],
+        )),
+        SafeAutoStatus::Drift => Err(RouterError::coded(
+            "E_SAFE_AUTO_DRIFT",
+            "safe-auto managed keys changed after enablement; restore is blocked to avoid overwriting user changes",
+        )),
+    }
+}
+
+fn safe_auto_recover(home: &Path) -> Result<Outcome> {
+    let journal = read_safe_auto_journal(home)?;
+    let current = read_optional(&config_path(home))?;
+    let current_hash = optional_hash(current.as_deref());
+    if current_hash != journal.before_hash && current_hash != journal.after_hash {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_TRANSACTION_PENDING",
+            "config.toml changed outside the interrupted safe-auto transaction; preserve it and resolve the conflict",
+        ));
+    }
+    if current_hash == journal.before_hash {
+        if journal.operation == "restore" && !safe_auto_state_path(home).exists() {
+            atomic_write(
+                &safe_auto_state_path(home),
+                serde_json::to_vec_pretty(&journal.state)?.as_slice(),
+            )?;
+        }
+        fs::remove_file(safe_auto_journal_path(home))?;
+        return Ok(outcome(
+            "safe-auto-recover",
+            "OK_RECOVERED",
+            None,
+            true,
+            None,
+            vec!["the interrupted safe-auto write had not changed config.toml".into()],
+        ));
+    }
+    if journal.operation == "enable" {
+        let document = parse_config(current.as_deref())?;
+        ensure_safe_auto_active(&document, &journal.state)?;
+        atomic_write(
+            &safe_auto_state_path(home),
+            serde_json::to_vec_pretty(&journal.state)?.as_slice(),
+        )?;
+    } else {
+        let document = parse_config(current.as_deref())?;
+        let restored = restore_safe_auto_document(document, &journal.state)?;
+        let restored_text = restored.map(|document| document.to_string());
+        if optional_hash(restored_text.as_deref()) != journal.after_hash {
+            return Err(RouterError::coded(
+                "E_SAFE_AUTO_TRANSACTION_PENDING",
+                "safe-auto restored config does not match its journal; preserve config.toml",
+            ));
+        }
+        // When current_hash == after_hash the config write already completed.  Do not
+        // rewrite it: only finish the state/journal cleanup.  This preserves any
+        // unrelated user content and covers an interruption between either cleanup step.
+        if current_hash != journal.after_hash {
+            restore_optional(&config_path(home), restored_text.as_deref())?;
+        }
+        if safe_auto_state_path(home).exists() {
+            fs::remove_file(safe_auto_state_path(home))?;
+        }
+    }
+    fs::remove_file(safe_auto_journal_path(home))?;
+    Ok(outcome(
+        "safe-auto-recover",
+        "OK_RECOVERED",
+        None,
+        true,
+        None,
+        vec!["completed the interrupted safe-auto transaction after exact hash checks".into()],
+    ))
+}
+
+fn ensure_no_safe_auto_transaction(home: &Path) -> Result<()> {
+    if safe_auto_journal_path(home).exists() {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_TRANSACTION_PENDING",
+            "a previous safe-auto transaction requires `recover` before another action",
+        ));
+    }
+    Ok(())
+}
+
+fn evaluate_safe_auto(home: &Path) -> Result<SafeAutoStatus> {
+    let Some(state) = read_safe_auto_state(home)? else {
+        return Ok(SafeAutoStatus::Absent);
+    };
+    let current = read_optional(&config_path(home))?;
+    let document = parse_config(current.as_deref())?;
+    if config_matches_managed(&document, &state) {
+        Ok(SafeAutoStatus::Active)
+    } else {
+        Ok(SafeAutoStatus::Drift)
+    }
+}
+
+fn ensure_safe_auto_active(document: &DocumentMut, state: &SafeAutoState) -> Result<()> {
+    if state.protocol != PROTOCOL || !config_matches_managed(document, state) {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_DRIFT",
+            "safe-auto managed keys are absent or changed; refusing to overwrite user configuration",
+        ));
+    }
+    Ok(())
+}
+
+fn config_matches_managed(document: &DocumentMut, state: &SafeAutoState) -> bool {
+    SAFE_AUTO_KEYS.iter().all(|key| {
+        document
+            .get(key)
+            .and_then(Item::as_value)
+            .map(|value| {
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned)
+            })
+            .is_some_and(|value| state.managed.get(*key) == Some(&value))
+    })
+}
+
+fn snapshot_safe_auto_values(document: &DocumentMut) -> Result<BTreeMap<String, Option<String>>> {
+    let mut original = BTreeMap::new();
+    for key in SAFE_AUTO_KEYS {
+        if let Some(item) = document.get(key) {
+            if item.as_value().is_none() {
+                return Err(RouterError::coded(
+                    "E_CONFIG_INVALID",
+                    format!("managed config key {key} must be a scalar TOML value"),
+                ));
+            }
+            original.insert(key.into(), Some(item.to_string().trim().into()));
+        } else {
+            original.insert(key.into(), None);
+        }
+    }
+    Ok(original)
+}
+
+fn restore_safe_auto_document(
+    mut document: DocumentMut,
+    state: &SafeAutoState,
+) -> Result<Option<DocumentMut>> {
+    for key in SAFE_AUTO_KEYS {
+        match state.original.get(key).and_then(Option::as_deref) {
+            Some(representation) => {
+                let mini = format!("{key} = {representation}\n");
+                let parsed = mini.parse::<DocumentMut>().map_err(|error| {
+                    RouterError::coded(
+                        "E_SAFE_AUTO_STATE_INVALID",
+                        format!("cannot restore original {key}: {error}"),
+                    )
+                })?;
+                let item = parsed.get(key).cloned().ok_or_else(|| {
+                    RouterError::coded(
+                        "E_SAFE_AUTO_STATE_INVALID",
+                        format!("safe-auto state lacks a restorable {key} value"),
+                    )
+                })?;
+                document[key] = item;
+            }
+            None => {
+                document.remove(key);
+            }
+        }
+    }
+    if !state.config_existed_before && document.to_string().trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(document))
+    }
+}
+
+fn managed_safe_auto_values() -> BTreeMap<String, String> {
+    SAFE_AUTO_KEYS
+        .into_iter()
+        .zip(SAFE_AUTO_VALUES)
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect()
+}
+
+fn parse_config(contents: Option<&str>) -> Result<DocumentMut> {
+    contents
+        .unwrap_or_default()
+        .parse::<DocumentMut>()
+        .map_err(|error| {
+            RouterError::coded(
+                "E_CONFIG_INVALID",
+                format!("config.toml is invalid: {error}"),
+            )
+        })
+}
+
+fn read_safe_auto_state(home: &Path) -> Result<Option<SafeAutoState>> {
+    let Some(text) = read_optional(&safe_auto_state_path(home))? else {
+        return Ok(None);
+    };
+    let state: SafeAutoState = serde_json::from_str(&text).map_err(|_| {
+        RouterError::coded("E_SAFE_AUTO_STATE_INVALID", "safe-auto state is invalid")
+    })?;
+    if state.protocol != PROTOCOL
+        || SAFE_AUTO_KEYS
+            .iter()
+            .any(|key| !state.original.contains_key(*key) || !state.managed.contains_key(*key))
+        || state.managed != managed_safe_auto_values()
+    {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_STATE_INVALID",
+            "safe-auto state does not describe the supported three-key policy",
+        ));
+    }
+    Ok(Some(state))
+}
+
+fn read_safe_auto_journal(home: &Path) -> Result<SafeAutoJournal> {
+    let text = read_optional(&safe_auto_journal_path(home))?.ok_or_else(|| {
+        RouterError::coded(
+            "E_NOT_INSTALLED",
+            "no interrupted safe-auto transaction is present",
+        )
+    })?;
+    let journal: SafeAutoJournal = serde_json::from_str(&text).map_err(|_| {
+        RouterError::coded(
+            "E_SAFE_AUTO_TRANSACTION_PENDING",
+            "safe-auto transaction journal is invalid",
+        )
+    })?;
+    if journal.protocol != PROTOCOL || !matches!(journal.operation.as_str(), "enable" | "restore") {
+        return Err(RouterError::coded(
+            "E_SAFE_AUTO_TRANSACTION_PENDING",
+            "safe-auto transaction journal is unsupported",
+        ));
+    }
+    Ok(journal)
 }
 
 fn append_managed(existing: Option<&str>, state: &State) -> String {
@@ -1426,6 +1909,15 @@ fn current_path(home: &Path) -> PathBuf {
 fn journal_path(home: &Path) -> PathBuf {
     router_path(home).join("transaction.json")
 }
+fn safe_auto_state_path(home: &Path) -> PathBuf {
+    router_path(home).join("safe-auto.json")
+}
+fn safe_auto_journal_path(home: &Path) -> PathBuf {
+    router_path(home).join("safe-auto.transaction.json")
+}
+fn config_path(home: &Path) -> PathBuf {
+    home.join("config.toml")
+}
 fn agents_path(home: &Path) -> PathBuf {
     home.join("AGENTS.md")
 }
@@ -1916,5 +2408,243 @@ mod tests {
             run(&home, Command::Rollback, false).unwrap_err().code(),
             "E_TRANSACTION_PENDING"
         );
+    }
+
+    #[test]
+    fn safe_auto_enable_is_opt_in_idempotent_and_restores_only_managed_keys() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        let original = "# keep\nuser_value = 7\nsandbox_mode = \"read-only\"\n";
+        fs::write(config_path(&home), original).unwrap();
+
+        let enabled = run(&home, Command::SafeAutoEnable, false).unwrap();
+        assert_eq!(enabled.code, "OK");
+        let active = fs::read_to_string(config_path(&home)).unwrap();
+        assert!(active.contains("sandbox_mode = \"workspace-write\""));
+        assert!(active.contains("approval_policy = \"on-request\""));
+        assert!(active.contains("approvals_reviewer = \"auto_review\""));
+        assert!(active.contains("user_value = 7"));
+        assert_eq!(
+            run(&home, Command::SafeAutoEnable, false).unwrap().code,
+            "OK_NO_CHANGE"
+        );
+        assert_eq!(
+            run(&home, Command::SafeAutoStatus, false).unwrap().code,
+            "SAFE_AUTO_ACTIVE"
+        );
+
+        let mut user_edit = active.clone();
+        user_edit.push_str("user_added = \"preserve\"\n");
+        fs::write(config_path(&home), user_edit).unwrap();
+        let restored = run(&home, Command::SafeAutoRestore, false).unwrap();
+        assert_eq!(restored.code, "OK");
+        let after = fs::read_to_string(config_path(&home)).unwrap();
+        assert!(after.contains("user_value = 7"));
+        assert!(after.contains("user_added = \"preserve\""));
+        assert!(after.contains("sandbox_mode = \"read-only\""));
+        assert!(!after.contains("approvals_reviewer"));
+        assert_eq!(
+            run(&home, Command::SafeAutoStatus, false).unwrap().code,
+            "SAFE_AUTO_ABSENT"
+        );
+
+        let absent_home = temp.path().join("absent-config-codex");
+        fs::create_dir_all(&absent_home).unwrap();
+        run(&absent_home, Command::SafeAutoEnable, false).unwrap();
+        assert!(config_path(&absent_home).exists());
+        run(&absent_home, Command::SafeAutoRestore, false).unwrap();
+        assert!(!config_path(&absent_home).exists());
+
+        let all_keys_home = temp.path().join("all-keys-codex");
+        fs::create_dir_all(&all_keys_home).unwrap();
+        let all_keys_original = "sandbox_mode = \"read-only\"\napproval_policy = \"never\"\napprovals_reviewer = \"human\"\n";
+        fs::write(config_path(&all_keys_home), all_keys_original).unwrap();
+        run(&all_keys_home, Command::SafeAutoEnable, false).unwrap();
+        run(&all_keys_home, Command::SafeAutoRestore, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(config_path(&all_keys_home)).unwrap(),
+            all_keys_original
+        );
+    }
+
+    #[test]
+    fn safe_auto_drift_and_invalid_toml_fail_closed() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(config_path(&home), "user_value = 7\n").unwrap();
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        let active = fs::read_to_string(config_path(&home)).unwrap();
+        fs::write(
+            config_path(&home),
+            active.replace("auto_review", "human_review"),
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::SafeAutoStatus, false).unwrap().code,
+            "SAFE_AUTO_DRIFT"
+        );
+        assert_eq!(
+            run(&home, Command::SafeAutoDoctor, false)
+                .unwrap_err()
+                .code(),
+            "E_SAFE_AUTO_DRIFT"
+        );
+        assert_eq!(
+            run(&home, Command::SafeAutoRestore, false)
+                .unwrap_err()
+                .code(),
+            "E_SAFE_AUTO_DRIFT"
+        );
+
+        let invalid = temp.path().join("invalid-codex");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(
+            config_path(&invalid),
+            "sandbox_mode = \"old\"\nsandbox_mode = \"duplicate\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run(&invalid, Command::SafeAutoEnable, false)
+                .unwrap_err()
+                .code(),
+            "E_CONFIG_INVALID"
+        );
+    }
+
+    #[test]
+    fn safe_auto_restore_requires_explicit_boundary_before_router_uninstall() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        let routing_doctor = run(&home, Command::Doctor, false).unwrap();
+        assert!(routing_doctor
+            .details
+            .iter()
+            .any(|detail| detail.contains("safe-auto=active")));
+        assert_eq!(
+            run(&home, Command::Uninstall, false).unwrap_err().code(),
+            "E_SAFE_AUTO_ACTIVE"
+        );
+        run(&home, Command::SafeAutoRestore, false).unwrap();
+        assert_eq!(run(&home, Command::Uninstall, false).unwrap().code, "OK");
+    }
+
+    #[test]
+    fn safe_auto_recovery_finishes_after_config_restore_before_state_cleanup() {
+        for remove_state in [false, true] {
+            let temp = fixture();
+            let home = temp.path().join("fixture-codex");
+            fs::create_dir_all(&home).unwrap();
+            fs::write(config_path(&home), "user_value = 7\n").unwrap();
+            run(&home, Command::SafeAutoEnable, false).unwrap();
+            let state = read_safe_auto_state(&home).unwrap().unwrap();
+            let active = fs::read_to_string(config_path(&home)).unwrap();
+            let restored = restore_safe_auto_document(parse_config(Some(&active)).unwrap(), &state)
+                .unwrap()
+                .map(|document| document.to_string());
+            let journal = SafeAutoJournal {
+                protocol: PROTOCOL,
+                operation: "restore".into(),
+                before_hash: optional_hash(Some(&active)),
+                after_hash: optional_hash(restored.as_deref()),
+                state,
+            };
+            restore_optional(&config_path(&home), restored.as_deref()).unwrap();
+            if remove_state {
+                fs::remove_file(safe_auto_state_path(&home)).unwrap();
+            }
+            atomic_write(
+                &safe_auto_journal_path(&home),
+                serde_json::to_vec_pretty(&journal).unwrap().as_slice(),
+            )
+            .unwrap();
+            assert_eq!(
+                run(&home, Command::Recover, false).unwrap().code,
+                "OK_RECOVERED"
+            );
+            assert!(!safe_auto_journal_path(&home).exists());
+            assert!(!safe_auto_state_path(&home).exists());
+            assert_eq!(
+                fs::read_to_string(config_path(&home)).unwrap(),
+                "user_value = 7\n"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_auto_recovery_without_router_state_reports_safe_auto_doctor_active() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        let original = "user_value = 7\n";
+        fs::write(config_path(&home), original).unwrap();
+
+        // Simulate an interrupted safe-auto enable after config.toml was written but
+        // before safe-auto.json was durably created. No routing install/state exists.
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        let state = read_safe_auto_state(&home).unwrap().unwrap();
+        let active = fs::read_to_string(config_path(&home)).unwrap();
+        fs::remove_file(safe_auto_state_path(&home)).unwrap();
+        let journal = SafeAutoJournal {
+            protocol: PROTOCOL,
+            operation: "enable".into(),
+            before_hash: optional_hash(Some(original)),
+            after_hash: optional_hash(Some(&active)),
+            state,
+        };
+        atomic_write(
+            &safe_auto_journal_path(&home),
+            serde_json::to_vec_pretty(&journal).unwrap().as_slice(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            run(&home, Command::Recover, false).unwrap().code,
+            "OK_RECOVERED"
+        );
+        assert_eq!(
+            run(&home, Command::SafeAutoDoctor, false).unwrap().code,
+            "OK_ACTIVE"
+        );
+        assert!(!safe_auto_journal_path(&home).exists());
+        assert!(safe_auto_state_path(&home).exists());
+        // General routing Doctor reports the independent safe-auto boundary honestly
+        // because routing was never installed; this is not a recovery failure.
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap_err().code(),
+            "E_SAFE_AUTO_ACTIVE"
+        );
+    }
+
+    #[test]
+    fn safe_auto_recovery_rejects_unknown_config_hash() {
+        let temp = fixture();
+        let home = temp.path().join("fixture-codex");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(config_path(&home), "user_value = 7\n").unwrap();
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        let state = read_safe_auto_state(&home).unwrap().unwrap();
+        let journal = SafeAutoJournal {
+            protocol: PROTOCOL,
+            operation: "restore".into(),
+            before_hash: "0".repeat(64),
+            after_hash: "1".repeat(64),
+            state,
+        };
+        atomic_write(
+            &safe_auto_journal_path(&home),
+            serde_json::to_vec_pretty(&journal).unwrap().as_slice(),
+        )
+        .unwrap();
+        fs::write(config_path(&home), "user edit after interruption\n").unwrap();
+        assert_eq!(
+            run(&home, Command::Recover, false).unwrap_err().code(),
+            "E_SAFE_AUTO_TRANSACTION_PENDING"
+        );
+        assert!(safe_auto_journal_path(&home).exists());
     }
 }

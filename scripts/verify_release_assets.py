@@ -6,7 +6,11 @@ import argparse
 import hashlib
 import json
 import tarfile
+import sys
 from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_policy_activation import verify_archive_payload
 
 
 PLATFORMS = [
@@ -94,6 +98,10 @@ def verify_archive(path: Path, platform: str, arch: str, suffix: str) -> None:
         plugin = json.load(plugin_file)
         if manifest.get("version") != "1.0.2" or plugin.get("version") != "1.0.2":
             raise SystemExit(f"{path.name} is not version 1.0.2")
+    # Run the same end-to-end payload-chain verifier used by source preflight so
+    # release assets cannot pass on layout checks while carrying an inactive or
+    # hash-inconsistent router payload.
+    verify_archive_payload(path)
 
 
 def main() -> None:

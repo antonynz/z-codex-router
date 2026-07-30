@@ -5,7 +5,7 @@ use z_codex_router::{execute, Command, Options};
 #[derive(Parser)]
 #[command(
     name = "routerctl",
-    about = "Internal control plane for Z Codex Router"
+    about = "Internal control plane for Z Codex Router (routing and explicit safe-auto approval opt-in)"
 )]
 struct Cli {
     /// Plugin release root. The Codex skill supplies this automatically.
@@ -30,6 +30,25 @@ enum CliCommand {
     Recover,
     Rollback,
     Uninstall,
+    /// Explicitly opt in to the safe automatic approval reviewer policy.
+    SafeAuto {
+        #[command(subcommand)]
+        command: SafeAutoCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SafeAutoCommand {
+    /// Apply the three-key safe automatic approval policy.
+    Enable,
+    /// Restore only the three keys' pre-enable values (alias: restore).
+    Disable,
+    /// Restore only the three keys' pre-enable values.
+    Restore,
+    /// Report active, drift, or absent state without changing files.
+    Status,
+    /// Verify active state and fail closed on drift.
+    Doctor,
 }
 
 fn main() {
@@ -42,6 +61,12 @@ fn main() {
         CliCommand::Recover => Command::Recover,
         CliCommand::Rollback => Command::Rollback,
         CliCommand::Uninstall => Command::Uninstall,
+        CliCommand::SafeAuto { command } => match command {
+            SafeAutoCommand::Enable => Command::SafeAutoEnable,
+            SafeAutoCommand::Disable | SafeAutoCommand::Restore => Command::SafeAutoRestore,
+            SafeAutoCommand::Status => Command::SafeAutoStatus,
+            SafeAutoCommand::Doctor => Command::SafeAutoDoctor,
+        },
     };
     let options = Options {
         source: cli.source,

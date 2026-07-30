@@ -44,6 +44,16 @@ CONTRACT_MARKERS = (
     "顺序任务不应创建 sub-agent",
     "方案固定后，必须重新分类具体实现 tier",
     "最终回报至少披露 `predicted_tier`",
+    "新建独立根时，以新线程实际创建参数和运行时状态为准",
+    "fork 只复制上下文，不复制人工授权",
+    "safe-auto enable",
+    "sandbox_mode = \"workspace-write\"",
+    "approval_policy = \"on-request\"",
+    "approvals_reviewer = \"auto_review\"",
+    "路由 `uninstall` 不会自动恢复权限配置",
+    "E_SAFE_AUTO_TRANSACTION_PENDING",
+    "safe-auto doctor",
+    "E_SAFE_AUTO_ACTIVE",
 )
 
 

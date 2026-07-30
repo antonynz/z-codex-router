@@ -6,6 +6,8 @@ import os
 import re
 from pathlib import Path
 
+from verify_policy_activation import verify_contract
+
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = {".git", "target", "dist"}
@@ -18,6 +20,7 @@ HOME = str(Path.home())
 
 
 def main() -> None:
+    verify_contract(ROOT / "plugins" / "z-codex-router")
     findings: list[str] = []
     for path in ROOT.rglob("*"):
         if not path.is_file() or any(part in EXCLUDED for part in path.parts):

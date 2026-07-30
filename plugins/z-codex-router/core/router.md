@@ -61,6 +61,36 @@ C1 先完成需求、根因或架构判断；方案固定后，必须重新分�
 
 如果运行时仍不匹配，当前根不得继续领域诊断、实施或代做；新根必须重新核验 model/effort 后才可开始。C2 使用一个可审计的 Luna/Terra max 单代理执行面；C3 由 Sol 完成风险判断和实施，一次有证据的完整修正后仍失败即停止，只有明确要求才由未参与实现的 reviewer 复核，reviewer 不触发新的实现重试。
 
+## 独立根、权限与安全自动审批
+
+新建独立根时，以新线程实际创建参数和运行时状态为准：`model`、`cwd`、`sandbox` 与
+`approval` 都必须由新根重新解析。不得假设它继承父会话的临时 sandbox、approval、凭证或
+其他人工授权；fork 只复制上下文，不复制人工授权。若参数或状态未暴露，记为 unknown 并
+fail closed，不猜继承关系。
+
+安全自动审批是明确 opt-in 的权限配置，不由插件安装、普通路由 enable 或新线程隐式开启。
+在已安装插件的 launcher 上运行 `safe-auto enable` 才会原子地设置且仅设置：
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+`auto_review` 只替换符合条件的审批 reviewer，不扩大 `workspace-write` sandbox，也不等于
+用户授权。Computer Use、凭证、支付、签署、发布、生产变更及其他高风险或不可逆外部动作仍
+必须由具备权限的人明确确认并实际执行。使用 `safe-auto status`/`safe-auto doctor` 检查
+`active`、`drift` 或 `absent`；使用 `safe-auto restore`（`disable` 为同义命令）只恢复这
+三个键的启用前原值/缺失状态。检测到用户改动、重复 TOML 键或事务 hash 漂移时拒绝覆盖并
+fail closed。`recover` 也处理 `E_SAFE_AUTO_TRANSACTION_PENDING`，仅在 journal before/after
+hash 可验证时继续。路由 `uninstall` 不会自动恢复权限配置；必须先显式 restore，再卸载路由，避免
+误删用户之后新增的配置。若恢复的是 safe-auto 事务，应以 `safe-auto doctor` 验收；路由尚未启用时，
+通用 `doctor` 返回 `E_SAFE_AUTO_ACTIVE` 只表示独立的权限 opt-in 仍 active，不是恢复失败。
+
+当 `create_thread` 未直接暴露时，先对线程创建能力执行一次 `tool_search`；模型/effort 不
+匹配时最多自动重路由一次，仍不匹配就报告 route exception 并停止。C1 方案固定后，必须
+重新分类具体实现 tier；严格顺序任务不创建 sub-agent。
+
 ## 单代理与委派
 
 默认单代理执行，不为了形式上的角色所有权拆分任务。只有至少两个真正独立、文件所有权不重叠、各自有独立验收且并行收益大于协调成本的工作包才创建 sub-agent；顺序依赖的工作不委派。例如“发现最新 Git 分支 → 检查工作树 → 切换/更新”的顺序任务不应创建 sub-agent。

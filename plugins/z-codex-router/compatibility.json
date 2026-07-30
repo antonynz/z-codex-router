@@ -12,7 +12,10 @@
   },
   "installer": {
     "managedBlockProtocol": 1,
-    "configToml": "untouched-1.0.0",
+    "configToml": {
+      "ordinaryInstallAndRoutingEnable": "untouched",
+      "safeAutoApproval": "explicit-opt-in-three-keys"
+    },
     "failureMode": "closed"
   }
 }

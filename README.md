@@ -37,22 +37,53 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 > 此会话只能安装插件或需要新会话，明确回报“已安装但未启用”及唯一下一步“调用 Enable Z Codex
 > Router”。
 
+#### 安全自动审批（仅明确请求时）
+
+> 仅在我明确要求时，为已安装的 Z Codex Router 开启安全自动审批；先检查当前
+> `safe-auto status`/`safe-auto doctor`，再执行 `safe-auto enable`，并回报只管理
+> `sandbox_mode`、`approval_policy`、`approvals_reviewer` 三个键。若我要求停用或恢复，执行
+> `safe-auto restore`（drift 或事务冲突时停止）；不要因普通安装或路由启用而隐式开启，也不要
+> 扩大 sandbox 或替代高风险/不可逆动作的人类授权。不要要求我安装 CLI 或手工执行命令，由
+> Agent 在隔离检查后完成并回报结果。
+
 #### 恢复或回滚
 
-> 恢复 Z Codex Router。先运行 Doctor；若为 `E_TRANSACTION_PENDING`，运行 `recover` 恢复原
-> 事务，再运行 Doctor。只操作受管块、payload 和状态，绝不覆盖我的其他 `AGENTS.md` 或
+> 恢复 Z Codex Router。先运行 Doctor；若为 `E_TRANSACTION_PENDING` 或
+> `E_SAFE_AUTO_TRANSACTION_PENDING`，运行 `recover` 恢复原事务。若是普通路由事务，再运行 Doctor
+> 并报告 `OK_ENABLED`/`OK_NOT_ENABLED`；若是 safe-auto 事务，运行 `safe-auto doctor` 并要求
+> `OK_ACTIVE`/`OK_ABSENT`，再单独运行 Doctor 报告路由结果。路由未启用但 safe-auto active 时
+> Doctor 返回 `E_SAFE_AUTO_ACTIVE` 是独立 opt-in 的真实边界，不是 safe-auto 恢复失败。只操作受管块、
+> payload、状态和 safe-auto 三键，绝不覆盖我的其他 `AGENTS.md` 或
 > `config.toml` 内容；哈希或用户修改冲突时停止。只有我明确要求回滚已完成的启用或升级时，才运行
 > `rollback`。
 
 #### 停用并卸载
 
-> 停用并卸载 Z Codex Router。按固定顺序运行 Doctor → `uninstall` → Doctor，要求最终为
-> `OK_NOT_ENABLED`；`uninstall` 必须先撤销精确受管块和状态、验证我的非受管内容不变、清理受管
-> payload/备份/状态。任一冲突或失败都保留插件和可恢复控制面，绝不先删插件；仅在最终验收后执行
+> 停用并卸载 Z Codex Router。先运行 `safe-auto status`/`safe-auto doctor`；若为 active，在本次
+> 用户明确的“停用并卸载”范围内运行 `safe-auto restore`，若为 drift 则停止并保留配置。然后按
+> Doctor → `uninstall` → Doctor，要求最终为 `OK_NOT_ENABLED`；`uninstall` 必须先撤销精确受管块和
+> 状态、验证我的非受管内容不变、清理受管 payload/备份/状态。任一冲突或失败都保留插件和可恢复控制面，绝不先删插件；仅在最终验收后执行
 > `codex plugin remove z-codex-router@z-codex-router --json`。重复执行应安全，且不要删除整个
 > `AGENTS.md` 或 `config.toml`。
 
 普通“安装”只安装插件并执行 dry-run，不等于启用全局路由；只有明确“安装并启用”才会改变全局路由。
+
+### 安全自动审批（明确 opt-in）
+
+插件安装和路由启用不会修改 `config.toml`。用户明确选择后，使用已安装插件的
+`routerctl safe-auto enable`（或对应 launcher）才会原子、幂等地写入以下三个顶层键：
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+`auto_review` 只替换符合条件的 reviewer，不扩大 sandbox，也不替代 Computer Use、凭证、支付、
+签署、发布、生产变更或其他高风险/不可逆外部动作的人类授权。`safe-auto status` 是只读状态检查，
+`safe-auto doctor` 对 drift fail closed，`safe-auto restore`（`disable` 同义）只恢复这三个键的
+启用前原值/缺失状态并保留其他用户配置。路由 `uninstall` 不会自动恢复权限配置；先显式 restore，
+再执行卸载。重复键、用户改动或事务漂移都会停止且不覆盖配置。
 
 ### 支持平台
 
@@ -107,18 +138,34 @@ packages for other platforms.
 > If this session can only install the plugin or needs a new session, explicitly report “installed
 > but not enabled” and the single next step: invoke Enable Z Codex Router.
 
+#### Safe automatic approval (only on explicit request)
+
+> Only when I explicitly ask, enable safe automatic approval for the installed Z Codex Router. First
+> check `safe-auto status`/`safe-auto doctor`, then run `safe-auto enable`, and report that it manages
+> only `sandbox_mode`, `approval_policy`, and `approvals_reviewer`. If I ask to disable or restore it,
+> run `safe-auto restore` and stop on drift or a pending transaction. Never infer this opt-in from
+> ordinary installation/routing enablement, expand the sandbox, or replace human authorization for
+> high-risk or irreversible actions. Do not ask me to install a CLI or run commands manually; perform
+> the isolated checks and report the result.
+
 #### Recover or roll back
 
-> Recover Z Codex Router. Run Doctor first; if it returns `E_TRANSACTION_PENDING`, run `recover`
-> to restore the original transaction, then run Doctor again. Touch only managed blocks, payload,
-> and state; never overwrite my other `AGENTS.md` or `config.toml` content, and stop on a hash or
+> Recover Z Codex Router. Run Doctor first; if it returns `E_TRANSACTION_PENDING` or
+> `E_SAFE_AUTO_TRANSACTION_PENDING`, run `recover` to restore the original transaction. For a routing
+> transaction, run Doctor and report `OK_ENABLED`/`OK_NOT_ENABLED`; for a safe-auto transaction, run
+> `safe-auto doctor` and require `OK_ACTIVE`/`OK_ABSENT`, then run general Doctor separately. A route-
+> absent installation with safe-auto active may honestly return `E_SAFE_AUTO_ACTIVE` from general Doctor;
+> that is not a failed safe-auto recovery. Touch only managed blocks, payload, state, and the safe-auto three keys; never overwrite
+> my other `AGENTS.md` or `config.toml` content, and stop on a hash or
 > user-change conflict. Run `rollback` only when I explicitly ask to undo a completed enablement
 > or upgrade.
 
 #### Disable and uninstall
 
-> Disable and uninstall Z Codex Router. Use this exact order: Doctor → `uninstall` → Doctor and
-> require final `OK_NOT_ENABLED`; `uninstall` must first revoke only the exact managed block and
+> Disable and uninstall Z Codex Router. First run `safe-auto status`/`safe-auto doctor`; if it is active,
+> explicitly run `safe-auto restore` as part of this user-requested disable-and-uninstall operation; if
+> it reports drift, stop and preserve the configuration. Then use the exact order Doctor → `uninstall` →
+> Doctor and require final `OK_NOT_ENABLED`; `uninstall` must first revoke only the exact managed block and
 > state, verify my unmanaged content is unchanged, and clean managed payload/backups/state. On any
 > conflict or failure, retain the plugin and recoverable control plane—never remove the plugin
 > first. Only after final acceptance run `codex plugin remove z-codex-router@z-codex-router --json`.
@@ -126,6 +173,25 @@ packages for other platforms.
 
 An ordinary “install” installs the plugin and performs a dry-run; it does not enable global routing.
 Only explicit “install and enable” may change global routing.
+
+### Safe automatic approval (explicit opt-in)
+
+Plugin installation and routing enablement never modify `config.toml`. Only an explicit
+`routerctl safe-auto enable` invocation writes these three top-level keys atomically and idempotently:
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+Auto-review only substitutes the eligible approval reviewer. It does not expand the sandbox or grant
+human authorization for Computer Use, credentials, payment, signing, publishing, production changes,
+or other high-risk/irreversible external actions. Use `safe-auto status` for a read-only state check,
+`safe-auto doctor` to fail closed on drift, and `safe-auto restore` (`disable` is an alias) to restore
+only the three pre-enable values while preserving unrelated user configuration. Routing uninstall
+does not implicitly restore permission configuration; restore it explicitly first. Duplicate keys,
+user edits, and transaction hash drift stop without overwriting config.
 
 ### Supported platforms
 

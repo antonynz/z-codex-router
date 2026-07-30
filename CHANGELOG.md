@@ -8,6 +8,11 @@
   the C1 independent-root handoff, commentary and thread-creation protocol, post-C1
   reclassification, and sequential-task delegation boundaries.
 - Added regression content contracts and synchronized active release metadata and asset checks.
+- Added an explicit `safe-auto` opt-in that atomically manages only the three approval/sandbox keys,
+  with key-level restore, drift detection, crash recovery, status/Doctor checks, and an uninstall
+  boundary that requires restoring permission configuration first.
+- Added an end-to-end policy activation verifier and wired it into source and release-asset preflight;
+  compatibility metadata now distinguishes untouched ordinary routing from explicit safe-auto config.
 
 ## 1.0.1 - 2026-07-29
 
