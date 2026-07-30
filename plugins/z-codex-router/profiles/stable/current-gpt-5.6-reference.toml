@@ -7,7 +7,8 @@ purpose = "仅作为已列出、已评估环境的参考 mapping；并非通用�
 evaluation_state = "listed-environment-reference"
 
 [compatibility]
-runtime_metadata_required = true
+runtime_observability = "three-state"
+unobservable = "receipt-aware"
 exact_match_required = true
 supported_platforms = ["darwin", "linux", "windows"]
 

@@ -1,240 +1,225 @@
-# Agent 安装协议
+# Agent 安装与生命周期协议
 
-本文件是确定性安装合同，适用于 Agent 仅获得以下信息的场景：
+本协议面向代表用户执行安装的 Codex Agent。公开版本固定为 `1.0.0`，实现为 POSIX `sh` 与 Windows
+PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 
-- `https://github.com/antonynz/z-codex-router`
-- 用户要求“安装”，或明确要求“安装并启用” Z Codex Router
+## 不可越过的边界
 
-## 1. 权限边界
+- 解析 Codex home 时显式 `CODEX_HOME` 优先；否则使用用户目录下的 `.codex`。禁止相对于仓库、
+  worktree 或当前目录推断。
+- 测试只能写临时 Codex home，绝不把真实 Codex home 当 fixture。
+- 普通 plugin install 只注册 source 并执行 Router preflight；只有用户明确要求 enable 才能写
+  `AGENTS.md` 与 Router state。
+- 写入型生命周期不解析或修改 `config.toml`。Doctor 只读取
+  `project_doc_max_bytes`；legacy cleanup 只做逐字节 backup。脚本版没有审批或 sandbox 管理命令。
+- 非空全局 `AGENTS.override.md` 会遮蔽 `AGENTS.md`；安装必须返回
+  `E_GLOBAL_OVERRIDE_ACTIVE`，不得修改 override。
+- 旧 Rust/prebuilt state 不迁移、不覆盖。只允许显式 legacy cleanup 后 fresh install。
+- 创建新任务仍需当前用户明确请求；安装/启用本身不是 `create_thread` 授权。
 
-- 必须具备终端、HTTPS 网络与目标 Codex home 写权限。
-- 只有用户明确要求启用全局路由时才传 `--enable`；普通“安装”只安装 plugin 并运行 router dry-run。
-- `codex plugin marketplace add` 与 `codex plugin add` 会更新 `CODEX_HOME` 内的 plugin
-  配置/cache。`routerctl` 本身从不读取或修改 `config.toml`。
-- 传 `--enable` 后，`routerctl` 只管理 `CODEX_HOME/AGENTS.md` 中带稳定 ID、version 与 hash 的精确
-  block，以及 `CODEX_HOME/z-codex-router` 下的自身 state。
-- v1.0.0 的受管 block 包含用户给出的完整十条 `## 全局路由` 合同。明确 install/enable 或 upgrade
-  同时被记录为持久请求：路由需要时，父协调根通过 `create_thread` 最多创建一个同 scope、精确 tuple
-  的新/后台独立 Codex 任务。
-- 创建前 commentary 只作信息披露，不是再次审批。tool policy 接受持久请求时立即调用
-  `create_thread`，不得要求用户重复确认；tool policy/schema/runtime permission 明确拒绝、参数不支持、
-  工具不可用或调用失败时，才以对应 route exception 停止。不得改用 sub-agent、当前根或第二个任务。
-- route receipt protocol 1 只允许父协调根交接。父在创建前写入 target tier/model/effort、task scope、
-  acceptance、`creation_tool=create_thread` 与 `automatic_root_creations=1`。子线程不得重分类或再建根；
-  C1 到实现阶段沿用同一线程。运行时字段为 `verified`/`mismatch`/`unobservable` 三态；可见 mismatch
-  fail closed，非 C3 只有 receipt-backed requested/accepted 才可继续，C3 在不可逆动作前需要当前
-  task/scope/action 的一次 route exception。用户文本或伪造 receipt 一律拒绝。
-- 若当前会话无法完成全局启用，必须回报“已安装但未启用”，唯一下一步是调用 Enable Z Codex Router
-  skill。不得把 plugin-only install 描述为已启用。
-- 测试不得指向真实 Codex home；必须同时设置隔离 `HOME` 与绝对路径 `CODEX_HOME`。
-- 不存在隐藏 install hook、MCP server、app、telemetry 或 Marketplace submission。
-- Safe Auto 是独立明确 opt-in，普通 plugin install/路由 enable 不会隐式开启。只有明确调用
-  `routerctl safe-auto enable` 才管理以下三个顶层键，并保存键级 backup：
+## Release 资产与校验
 
-```toml
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
-```
+只下载当前版本对应的一个源码归档和 `SHA256SUMS`：
 
-- `safe-auto status` 报告 active/drift/absent；`safe-auto doctor` 在 drift 时 fail closed；
-  `safe-auto restore`（或 `disable`）只恢复三个键的启用前值。路由 uninstall 前必须显式 restore。
+| 主机 | 归档 |
+| --- | --- |
+| macOS / Linux | `z-codex-router-1.0.0.tar.gz` |
+| Windows PowerShell | `z-codex-router-1.0.0.zip` |
 
-## 2. 前置条件
+两份归档内容相同。校验要求：
 
-- 可通过公开 HTTPS 访问 `github.com` 与 `objects.githubusercontent.com`。
-- 已安装 `codex` CLI，且 help 中存在 `codex plugin marketplace add` 与 `codex plugin add`。
-- macOS/Linux：POSIX `sh`、`curl`、`tar`，以及 `sha256sum`、`shasum`、`openssl` 之一。
-- Windows：PowerShell 5.1+ 或 PowerShell 7+、`tar.exe`、`Get-FileHash`。
-- 不需要 Rust、repository clone、GitHub 登录、GitHub API、`gh` 或 `jq`。
+1. URL 必须是 HTTPS。
+2. `SHA256SUMS` 中目标文件名恰好出现一次。
+3. 下载归档 SHA-256 与清单完全相同。
+4. 归档拒绝绝对路径、`..`、重复 entry、链接和特殊文件。
+5. 解包树拒绝 Mach-O、ELF、PE/EXE 魔数。
+6. Plugin 与 release manifest 都必须是公开 `1.0.0`。
+7. `.agents/plugins/marketplace.json`、plugin manifest、两种 controller 和 Router core 必须存在。
 
-## 3. Agent 精确步骤
+Bootstrap 会把 marketplace source 复制到
+`<codex_home>/z-codex-router-marketplaces/1.0.0+codex.<timestamp>/`，只在该本地副本中更新 plugin
+manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.0.0`。
 
-先判断 host shell。只从 public latest Release 下载 bootstrap；不得 clone repository，不得使用 GitHub
-API，也不得下载其他平台 package。
+## Fresh install
 
-### macOS/Linux
+POSIX：
 
 ```sh
-work_dir=$(mktemp -d)
-curl --fail --silent --show-error --location \
-  --proto '=https' --proto-redir '=https' --tlsv1.2 \
-  -o "$work_dir/install.sh" \
-  https://github.com/antonynz/z-codex-router/releases/latest/download/install.sh
-sh "$work_dir/install.sh" --enable
+sh install.sh --source . --enable
 ```
 
-用户只要求安装时，省略 `--enable`。
-
-### Windows PowerShell
+PowerShell：
 
 ```powershell
-$workDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid())
-New-Item -ItemType Directory -Path $workDir | Out-Null
-$installer = Join-Path $workDir "install.ps1"
-Invoke-WebRequest `
-  https://github.com/antonynz/z-codex-router/releases/latest/download/install.ps1 `
-  -OutFile $installer
-& $installer -Enable
+.\install.ps1 -Source . -Enable
 ```
 
-用户只要求安装时，省略 `-Enable`。
+执行顺序：
 
-### 安全升级（不要先卸载）
+1. 下载、校验并安全解包源码，或使用显式 `--source` / `-Source`。
+2. 用源码 controller 执行只读 `dry-run`。
+3. Preflight 验证 source、profile、global override、legacy state、路径和当前 transaction。
+4. 生成唯一的本地 cache build source。
+5. 使用 Codex CLI 注册 marketplace 并安装 plugin。
+6. 只有 enable 请求才从新 cache launcher 执行 `install`。
+7. 执行 `doctor` 并要求 `OK_ENABLED`。
+8. 回报公开版本、本地 cache version、source、下载字节、Router action 和 `start-a-new-task`。
 
-对健康已有安装，重新运行 latest bootstrap，并带现有 enablement authority。不要调用旧 package 中的
-launcher、不要先 uninstall、不要手工编辑受管 block。latest bootstrap 先把新 plugin 安装到 path-stable
-source，再由**新 launcher**运行 `upgrade --dry-run`、`upgrade` 与 Doctor。
+任何 Codex registration 失败都发生在 Router 写入之前；`AGENTS.md`、`config.toml` 与 Router state
+必须保持不变。若 Router 写入后的 Doctor 失败，bootstrap 必须立即 rollback；rollback 失败时保留
+transaction/backup 并转 Recover，不得把失败安装报告为启用。
 
-新 control plane 先用当前安装的精确 payload evidence 校验受管 block 与 state，再把已经验证的
-managed block/current pointer 原子替换为新版本合同，并逐字保留用户 `AGENTS.md` 内容、
-`config.toml`、Safe Auto state 与 `z-codex-router-profile.toml` override。真正的 managed drift、
-损坏 profile、未知事务或 hash mismatch 继续 fail closed；报告稳定错误码并使用 Recover，不得强制
-uninstall。
+## 受管块与指令预算
 
-升级写入完成后无需重启 app 或 CLI；`routerctl` 与 Doctor 立即读取新 state。已有 task 保留已加载的
-skills/tools；新开 task 才会载入更新后的 plugin context。
+首次安装把 managed block 写在全局 `AGENTS.md` 的字节前缀：
 
-## 4. Bootstrap 保证
+- 无 BOM：从 byte 0 开始。
+- UTF-8 BOM：保留 BOM，block 从 byte 3 开始。
+- Block 使用用户文件既有的 CRLF 或 LF；用户 remainder 不转码、不重排。
+- 若原文件有内容，在 block 后写一个相同风格的 separator，再附上原始 bytes。
 
-Bootstrap 必须：
+State 记录 block/prefix byte length 与 SHA-256。Doctor 必须同时检查：
 
-1. 将 host 映射到唯一 platform token；
-2. 下载新的小型 `SHA256SUMS`；
-3. 仅在匹配 cache archive 的 SHA-256 仍一致时复用；
-4. 否则只下载一个匹配平台 tarball；
-5. 拒绝缺失/重复 checksum、错误版本、absolute path、`..`、duplicate entry、link 与 special file；
-6. 解压到私有临时目录；
-7. 在 `CODEX_HOME/z-codex-router-marketplace-versions/<version>/<platform>-<arch>` 保留可审计
-   version snapshot；
-8. 仅在新 snapshot 校验成功后，原子刷新
-   `CODEX_HOME/z-codex-router-marketplaces/<platform>-<arch>` 的 path-stable active source；
-9. 对该 source 执行 `codex plugin marketplace add` 与 `codex plugin add`；
-10. 不带 enablement 时只执行 `dry-run`；明确 enablement 时才执行事务 install/upgrade 与 Doctor。
+- 实际全局 instruction source；
+- managed block 唯一性、start/end bytes 与 hash；
+- 有效 `project_doc_max_bytes`；
+- `doctor --cwd` 指定目录的 project/nested instruction count；
+- global override；
+- payload 与 profile hash。
 
-active source 绝不能只位于临时目录，否则 Codex 会指向已删除路径。同版本重复运行只下载小型 checksum，
-cache 命中后重新校验 archive、比较两个持久目录、幂等 reinstall，并保留 Doctor evidence。
+`managed_block_end > project_doc_max_bytes` 返回
+`E_MANAGED_BLOCK_OUTSIDE_INSTRUCTION_BUDGET`。不得靠静默提高用户配置绕过。
 
-## 5. 平台映射
+## 状态、事务与恢复
 
-| Host | Token | Release asset |
-| --- | --- | --- |
-| macOS Apple Silicon | `darwin-arm64` | `z-codex-router-darwin-arm64.tar.gz` |
-| macOS Intel | `darwin-amd64` | `z-codex-router-darwin-amd64.tar.gz` |
-| Linux arm64 | `linux-arm64` | `z-codex-router-linux-arm64.tar.gz` |
-| Linux x86_64 | `linux-amd64` | `z-codex-router-linux-amd64.tar.gz` |
-| Windows arm64 | `windows-arm64` | `z-codex-router-windows-arm64.tar.gz` |
-| Windows x86_64 | `windows-amd64` | `z-codex-router-windows-amd64.tar.gz` |
+新格式为 `script-v1`：
 
-每个 public Release 还包含 `SHA256SUMS`、`install.sh`、`install.ps1` 与本 `AGENT_INSTALL.md`。
-Source checkout 故意不含 compiled binary，不是可直接运行的 plugin package。
+```text
+<codex_home>/z-codex-router/
+├── current/
+├── versions/<version>/
+├── backups/backup-*/
+└── transaction/
+```
 
-## 6. 固定版本与镜像测试
+每个 state 字段是一个小文件。版本 payload 不可变；Shell 与 PowerShell 使用相同的 tree hash
+算法。写操作使用 Codex-home 内锁目录、逐字节 backup、before/intermediate/after SHA-256 和
+transaction 目录。
 
-固定 v1.0.0：
+Doctor 发现 transaction 时返回 `E_TRANSACTION_PENDING`。Recover 先校验 backup 自身 hash 及其与
+journal before hash 的对应关系；AGENTS 只接受 before/after，current state 只接受
+before/intermediate/after。未知值返回 `E_TRANSACTION_DRIFT` 并保留用户修改。成功恢复后再次运行
+Doctor。
+
+Rollback 只撤销最近完成的生命周期操作。若 `AGENTS.md` 在该操作完成后被用户继续编辑，返回
+`E_ROLLBACK_DRIFT`；不得用旧整文件 backup 覆盖新内容。
+
+## Upgrade
+
+公开版本可以保持 `1.0.0`，本地 source identity 使用新的 `+codex.<timestamp>`。升级顺序：
+
+1. 新 controller 执行 `upgrade --dry-run`。
+2. 验证当前 managed prefix、payload、profile、override 与 transaction。
+3. 新 cache source 注册成功后执行 `upgrade`。
+4. 原子替换 payload/current/managed prefix，保留用户 remainder、BOM、换行、`config.toml` 与 profile
+   override。
+5. Doctor 要求 `OK_ENABLED`；失败时立即 rollback，rollback 失败则转 Recover。成功后再提示新开
+   任务。
+
+相同 version 与 payload bytes 返回 `OK_NO_CHANGE`。不同 source 使用 `install` 返回
+`E_UPGRADE_REQUIRED`。
+
+## Profile override
+
+用户 override 位于 `<codex_home>/z-codex-router-profile.toml`，必须恰好包含 A0–C3：
+
+- A0 固定为 `current-qualified-root/runtime-qualified`。
+- 其他 model 是非空兼容 token。
+- Effort 只能是 `medium`、`high`、`xhigh`、`max`。
+
+命令：
+
+```text
+profile show
+profile init
+profile validate
+profile set <tier> <model> <effort>
+profile reset
+profile restore <backup>
+```
+
+Reset 先写受管 TOML backup 与 `.sha256` metadata，再删除 override。Restore 只接受
+`z-codex-router-profile-backups/` 内的常规 backup，验证路径、hash 和完整 mapping，并拒绝覆盖已有
+override。生命周期与 uninstall 始终保留 override。
+
+## Legacy cleanup
+
+检测到旧 `current.json`、旧 transaction、旧 managed block 或旧权限管理 state 时，fresh install
+返回 `E_LEGACY_INSTALL_DETECTED`。不得手工删除或隐式迁移。
+
+严格顺序：
+
+1. `legacy-cleanup --dry-run`
+2. 用户确认后 `legacy-cleanup`
+3. fresh `install`
+
+Bootstrap 入口：
 
 ```sh
-sh install.sh --version 1.0.0 --enable
+sh install.sh --source . --legacy-cleanup-dry-run
+sh install.sh --source . --legacy-cleanup
+sh install.sh --source . --enable
 ```
 
 ```powershell
-.\install.ps1 -Version 1.0.0 -Enable
+.\install.ps1 -Source . -LegacyCleanupDryRun
+.\install.ps1 -Source . -LegacyCleanup
+.\install.ps1 -Source . -Enable
 ```
 
-使用经过测试的 HTTPS asset mirror：
+Cleanup 要求旧 `current.json` 的 version/payload hash 与 managed block identity 完全相同，先备份
+`AGENTS.md`、存在时的 `config.toml` 和整个旧 Router state。块漂移、旧 transaction 或旧权限管理
+state 必须停止并给出旧控制面的恢复路径；不得删除或猜测用户权限键。
+
+## Uninstall
+
+顺序：
+
+1. Doctor。
+2. `uninstall`。
+3. Doctor 要求 `OK_NOT_ENABLED`。
+4. 最后才运行 `codex plugin remove z-codex-router@z-codex-router --json`。
+
+Uninstall 验证 managed prefix 后只移除 prefix 与 state；安装后的用户编辑仍位于 remainder 中并被
+保留。若 Router 创建了原本不存在且最终为空的 `AGENTS.md`，才删除该空文件。Profile override 保留。
+
+## 路由创建结果
+
+父任务只有在当前用户明确授权新任务时才调用一次 `create_thread`，并把 profile effort 映射到工具
+`thinking` 参数。结果必须分类为：
+
+- `threadId` → `ROUTE_READY`
+- `clientThreadId` → `ROUTE_PENDING`
+- policy 阻止 → `ROUTE_HANDOFF_REQUIRED`
+- destination tuple 拒绝 → `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`
+- input/project/target 拒绝 → `ROUTE_INPUT_REJECTED`
+- 无法确认 outcome → `ROUTE_OUTCOME_UNKNOWN`
+
+Pending 与 unknown 禁止重试。任何分支都禁止自动降级、当前任务代做、第二个根或 `spawn_agent`
+fallback。只有工具明确报告 tuple unsupported 才能作该结论。
+
+## 验收
+
+仓库提供：
 
 ```sh
-sh install.sh --version 1.0.0 \
-  --base-url https://mirror.example/z-codex-router/v1.0.0 --enable
+sh scripts/test_all.sh
 ```
 
 ```powershell
-.\install.ps1 -Version 1.0.0 `
-  -BaseUrl https://mirror.example/z-codex-router/v1.0.0 -Enable
+.\scripts\test_all.ps1
 ```
 
-拒绝 HTTP 与 HTTPS→HTTP redirect。
-
-## 7. 手动 fallback
-
-Bootstrap 无法执行时，必须等价复现同一协议：
-
-1. 按表解析唯一 platform token；
-2. 只从 `releases/latest/download` 下载匹配 tarball 与 `SHA256SUMS`；
-3. 选择与完整 asset filename 精确匹配的唯一 checksum 行；
-4. 解压前验证 SHA-256；
-5. 检查 archive entry，拒绝 absolute path、`..`、link、special file 与 duplicate；
-6. 解压到持久 version directory，再复制到目标 `CODEX_HOME` 下可恢复、path-stable 的 active source；
-7. 对 stable active source 运行：
-
-```text
-codex plugin marketplace add <persistent-source-root>
-codex plugin add z-codex-router@z-codex-router
-```
-
-8. 用显式 `--codex-home` 调用打包 `routerctl` launcher：先 dry-run；只有具备 enablement authority
-   时才 install/upgrade；最后运行 Doctor。
-
-## 8. Upgrade、recover 与 rollback
-
-- Upgrade：重新运行 latest installer，**不要先 uninstall**。有 router state 时，bootstrap 使用新
-  source launcher 的 `upgrade --dry-run` 与 `upgrade`。当前安装根据自身精确 payload evidence
-  验证后，事务替换一段 managed block/current pointer。
-- 显式 same-version `upgrade` 可用 journal 与原子 version-directory backup 刷新变化的本地 policy
-  payload，但前提是当前 block 逐字完整；不得修改 `config.toml`、Safe Auto 三键或 user profile override。
-- 任何 managed write 前都校验已有 override；无效 override 返回 `E_PROFILE_OVERRIDE_INVALID`，
-  必须修复或显式 `profile reset` 后再试，不得静默 fallback。
-- enablement/upgrade 失败会在返回错误前恢复本次 backup。若中断留下 `E_TRANSACTION_PENDING`，运行
-  `recover`；只有 journal 与当前文件匹配记录的 before/after 值时才恢复，无需第二次授权。
-- Safe Auto 事务中断返回 `E_SAFE_AUTO_TRANSACTION_PENDING`；运行 `recover` 并要求精确 config hash，
-  再运行 `safe-auto doctor` 验收。路由未启用但 Safe Auto active 时，通用 Doctor 返回
-  `E_SAFE_AUTO_ACTIVE` 是真实边界，不是 recovery 失败。
-- 已完成动作绝不自动 rollback。只有用户明确要求时，才从 installer 输出的 persistent active source
-  调用 `rollback`；它只替换精确 managed block 与 current pointer。
-
-## 9. Profile override 与 Desktop handoff
-
-`routerctl profile show` 与 Doctor 报告有效 mapping source（`default` 或 `user override`）、path 与
-mapping hash。`profile init` 创建 version payload 外的完整可编辑 override；`profile validate` 只读；
-`profile set <tier> <model> <effort>` 显式修改；`profile reset` 原子写入受管 TOML backup 与 SHA-256
-metadata 后删除 override；`profile restore <backup>` 只恢复其返回的受管 backup，并校验 path、hash 与
-完整 mapping。绝不要求用户手工覆盖文件。
-
-无效 TOML、duplicate key、缺失/未知 tier、空字段、不支持 effort 或无效 A0 语义返回
-`E_PROFILE_OVERRIDE_INVALID`，不静默回退。Future model token 可通过本地语法校验，但后续
-`create_thread` 仍须与实际 runtime allowlist 求交集并 fail closed。
-
-父先分类并冻结 scope/model/effort/receipt，再检查 Desktop/tool policy；follow-up 不重新分类。完整且
-identity-matched 的 v1.0.0 managed block 已包含用户的完整全局路由合同与持久明确请求。tool policy
-接受持久请求时，commentary 只作披露，父立即进行一次 receipt-backed `create_thread` 调用，不再次确认。
-不得用 `spawn_agent`、当前根或第二个任务替代。
-
-只有 Desktop/tool policy 明确拒绝持久请求、要求当前轮请求、工具不可用或调用失败时，才以对应 route
-exception 停止。`ROUTE_HANDOFF_REQUIRED` 只返回填入冻结 tuple 的中文直接命令：
-
-```text
-请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。
-```
-
-工具不可用或调用失败分别返回 `ROUTE_CREATE_UNAVAILABLE`、`ROUTE_CREATE_FAILED`，绝不授权第二个根。
-
-## 10. 停用与卸载
-
-若 Safe Auto active，先运行 `safe-auto status`/`safe-auto doctor`，并在用户明确停用并卸载的范围内
-运行 `safe-auto restore`；drift 时停止。保持 plugin 已安装，直到精确顺序全部成功：
-
-```text
-Doctor → uninstall → Doctor（OK_NOT_ENABLED）→ codex plugin remove z-codex-router@z-codex-router --json
-```
-
-`uninstall` 校验活动 payload hash，只撤销匹配的 `AGENTS.md` block 与 state，逐字确认剩余用户内容，
-再移除 router 管理的 payload、backup 与 state。任何冲突或失败都保留 plugin 与可恢复 control plane；
-不得删除整个 `AGENTS.md` 或 `config.toml`。
-
-## 11. 缓存、隐私与日志
-
-- Archive cache 位于 `CODEX_HOME/z-codex-router-cache/<version>/`；只保存 Release archive。
-- 不缓存 `SHA256SUMS`；每次运行都重新下载。
-- Plugin version snapshot 与 path-stable active source 是持久安装，不是 download cache。
-- 不打印 credential；用户内容只以路径、hash 与结构化状态报告，不回显全文。
-- Release asset、日志、test fixture 与 issue 中不得包含 token、真实 private config 或个人路径。
+CI 覆盖 macOS、Linux、Windows PowerShell 5.1 和 PowerShell 7。Release 前从最终提交生成 tar.gz 与
+zip，比较解包后的逐文件 hash，分别 smoke controller，并扫描当前树及全部可达 Git blobs 的编译魔数。
+PNG 文档图片明确保留。

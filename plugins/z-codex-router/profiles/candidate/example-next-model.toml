@@ -8,7 +8,8 @@ evaluation_state = "unevaluated"
 enabled = false
 
 [compatibility]
-runtime_metadata_required = true
+runtime_observability = "three-state"
+unobservable = "disabled-candidate"
 exact_match_required = true
 supported_platforms = ["darwin", "linux", "windows"]
 

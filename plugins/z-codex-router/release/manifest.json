@@ -2,5 +2,7 @@
   "schemaVersion": 1,
   "version": "1.0.0",
   "channel": "stable",
-  "payloadSha256": "56dd0fc2dcfd1587ddaa49297b4b5b72fed59e0d89c965c5791118e558480f1d"
+  "implementation": "posix-sh+powershell-5.1",
+  "stateFormat": "script-v1",
+  "compiledArtifacts": false
 }

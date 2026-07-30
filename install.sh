@@ -1,60 +1,53 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="antonynz/z-codex-router"
-PLUGIN_NAME="z-codex-router"
-MARKETPLACE_NAME="z-codex-router"
-VERSION="latest"
-BASE_URL="${ZCR_BASE_URL:-}"
+REPOSITORY=antonynz/z-codex-router
+PLUGIN_NAME=z-codex-router
+MARKETPLACE_NAME=z-codex-router
+VERSION=1.0.0
+BASE_URL=
+CODEX_HOME_ARG=${CODEX_HOME:-}
+CODEX_BIN=${CODEX_BIN:-codex}
+SOURCE_PACKAGE=
 ENABLE=0
-CODEX_BIN="${CODEX_BIN:-codex}"
-CODEX_HOME_ARG="${CODEX_HOME:-}"
-RESOLVE_OS=""
-RESOLVE_ARCH=""
-WORK_DIR=""
-SOURCE_ROOT=""
-VERSION_ROOT=""
-BACKUP_ROOT=""
+LEGACY_MODE=
+WORK_DIR=
+DOWNLOADED_BYTES=0
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--enable] [--version VERSION] [--base-url HTTPS_URL]
-                  [--codex-home PATH] [--codex-bin PATH]
+Usage: install.sh [--enable] [--version 1.0.0] [--base-url HTTPS_URL]
+                  [--codex-home PATH] [--codex-bin PATH] [--source PATH]
+       install.sh --legacy-cleanup-dry-run [same source/download options]
+       install.sh --legacy-cleanup [same source/download options]
 
-Installs the matching prebuilt Z Codex Router plugin from GitHub Releases.
-Global routing is changed only when --enable is present.
+Installs the universal, script-only Z Codex Router source package.
+Global routing changes only with --enable. Legacy Rust installations must be
+explicitly inspected and cleaned before a fresh script installation.
 EOF
 }
 
 fail() {
-  printf '%s\n' "$*" >&2
+  code=$1
+  shift
+  printf '%s: %s\n' "$code" "$*" >&2
   exit 1
 }
 
+cleanup() {
+  status=$?
+  if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+    rm -rf -- "$WORK_DIR"
+  fi
+  exit "$status"
+}
+
+trap cleanup 0
+trap 'exit 130' HUP INT TERM
+
 need_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "E_PREREQUISITE: missing command: $1"
-}
-
-resolve_platform() {
-  raw_os=$1
-  raw_arch=$2
-  case "$raw_os" in
-    Darwin|darwin|macOS|macos) platform=darwin ;;
-    Linux|linux) platform=linux ;;
-    Windows_NT|windows|Windows) platform=windows ;;
-    *) fail "E_PLATFORM_UNSUPPORTED: $raw_os" ;;
-  esac
-  case "$raw_arch" in
-    arm64|aarch64|ARM64|AARCH64) architecture=arm64 ;;
-    x86_64|amd64|AMD64|X64|x64) architecture=amd64 ;;
-    *) fail "E_ARCH_UNSUPPORTED: $raw_arch" ;;
-  esac
-  printf '%s-%s\n' "$platform" "$architecture"
-}
-
-valid_version() {
-  printf '%s\n' "$1" |
-    LC_ALL=C grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+  command -v "$1" >/dev/null 2>&1 ||
+    fail E_PREREQUISITE "missing command: $1"
 }
 
 sha256_file() {
@@ -65,369 +58,348 @@ sha256_file() {
   elif command -v openssl >/dev/null 2>&1; then
     openssl dgst -sha256 "$1" | awk '{print tolower($NF)}'
   else
-    fail "E_PREREQUISITE: need sha256sum, shasum, or openssl"
+    fail E_PREREQUISITE "need sha256sum, shasum, or openssl"
   fi
+}
+
+valid_version() {
+  printf '%s\n' "$1" |
+    LC_ALL=C grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
 download_https() {
   url=$1
   destination=$2
-  case "$url" in
-    https://*) ;;
-    *) fail "E_URL_INSECURE: only HTTPS URLs are accepted" ;;
-  esac
+  case "$url" in https://*) ;; *) fail E_URL_INSECURE "only HTTPS URLs are accepted" ;; esac
   curl --fail --silent --show-error --location \
-    --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    --max-redirs 5 --output "$destination" "$url"
+    --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 \
+    --output "$destination" "$url"
 }
 
 expected_checksum() {
-  sums_file=$1
-  asset_name=$2
-  awk -v wanted="$asset_name" '
+  sums=$1
+  asset=$2
+  awk -v wanted="$asset" '
     {
       name = $2
       sub(/^\*/, "", name)
       if (name == wanted) {
-        count += 1
+        count++
         hash = tolower($1)
       }
     }
     END {
-      if (count != 1 || hash !~ /^[0-9a-f]{64}$/) {
-        exit 1
-      }
+      if (count != 1 || hash !~ /^[0-9a-f]{64}$/) exit 1
       print hash
     }
-  ' "$sums_file" || fail "E_CHECKSUM_ENTRY: expected one exact checksum for $asset_name"
+  ' "$sums" || fail E_CHECKSUM_ENTRY "expected one checksum for $asset"
 }
 
-verify_checksum() {
-  file=$1
-  expected=$2
-  actual=$(sha256_file "$file")
-  [ "$actual" = "$expected" ] ||
-    fail "E_CHECKSUM_MISMATCH: $(basename "$file")"
+assert_no_compiled_files() {
+  root=$1
+  find "$root" -type f -print |
+    while IFS= read -r file; do
+      lower=$(printf '%s' "$file" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+      case "$lower" in
+        *.o|*.obj|*.a|*.lib|*.so|*.dylib|*.dll|*.exe|*.pdb|*.wasm|*.class|*.jar)
+          fail E_COMPILED_ARTIFACT "compiled artifact is forbidden: ${file#"$root"/}"
+          ;;
+      esac
+      magic=$(dd if="$file" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+      case "$magic" in
+        7f454c46|4d5a*|feedface|feedfacf|cefaedfe|cffaedfe|\
+        cafebabe|bebafeca|cafebabf|bfbafeca|0061736d|213c6172|4243c0de|dec0170b)
+          fail E_COMPILED_ARTIFACT "compiled executable is forbidden: ${file#"$root"/}"
+          ;;
+      esac
+    done
 }
 
 validate_archive() {
   archive=$1
-  platform_token=$2
-  architecture_token=$3
-  list_file=$4
-  verbose_file=$5
-
-  tar -tzf "$archive" >"$list_file" ||
-    fail "E_ARCHIVE_INVALID: cannot list archive"
-  [ -s "$list_file" ] || fail "E_ARCHIVE_INVALID: archive is empty"
-
+  list=$WORK_DIR/archive.list
+  verbose=$WORK_DIR/archive.verbose
+  tar -tzf "$archive" >"$list" ||
+    fail E_ARCHIVE_INVALID "cannot list source archive"
+  [ -s "$list" ] || fail E_ARCHIVE_INVALID "source archive is empty"
   while IFS= read -r entry; do
     case "$entry" in
-      ""|/*|*\\*|*'	'*|*" "*) fail "E_ARCHIVE_PATH: unsafe entry: $entry" ;;
+      ""|/*|*\\*|*'	'*|*" "*) fail E_ARCHIVE_PATH "unsafe archive entry: $entry" ;;
     esac
-    printf '%s\n' "$entry" |
-      LC_ALL=C grep -Eq '^[A-Za-z0-9._/-]+$' ||
-      fail "E_ARCHIVE_PATH: unsupported entry name"
-    case "/$entry/" in
-      *"/../"*) fail "E_ARCHIVE_PATH: traversal entry: $entry" ;;
-    esac
-  done <"$list_file"
-
-  duplicate=$(LC_ALL=C sort "$list_file" | uniq -d | sed -n '1p')
-  [ -z "$duplicate" ] || fail "E_ARCHIVE_PATH: duplicate entry: $duplicate"
-
-  tar -tvzf "$archive" >"$verbose_file" ||
-    fail "E_ARCHIVE_INVALID: cannot inspect archive types"
+    printf '%s\n' "$entry" | LC_ALL=C grep -Eq '^[A-Za-z0-9._/+@-]+$' ||
+      fail E_ARCHIVE_PATH "unsupported archive entry"
+    case "/$entry/" in *"/../"*) fail E_ARCHIVE_PATH "path traversal entry: $entry" ;; esac
+  done <"$list"
+  duplicate=$(LC_ALL=C sort "$list" | uniq -d | sed -n '1p')
+  [ -z "$duplicate" ] || fail E_ARCHIVE_PATH "duplicate archive entry: $duplicate"
+  tar -tvzf "$archive" >"$verbose" ||
+    fail E_ARCHIVE_INVALID "cannot inspect archive entry types"
   while IFS= read -r detail; do
     type=$(printf '%s' "$detail" | cut -c 1)
-    case "$type" in
-      -|d) ;;
-      *) fail "E_ARCHIVE_TYPE: links and special files are rejected" ;;
-    esac
-  done <"$verbose_file"
-
-  grep -Fx '.agents/plugins/marketplace.json' "$list_file" >/dev/null ||
-    fail "E_ARCHIVE_LAYOUT: marketplace manifest is missing"
-  grep -Fx 'plugins/z-codex-router/.codex-plugin/plugin.json' "$list_file" >/dev/null ||
-    fail "E_ARCHIVE_LAYOUT: plugin manifest is missing"
-  grep -Fx 'plugins/z-codex-router/release/manifest.json' "$list_file" >/dev/null ||
-    fail "E_ARCHIVE_LAYOUT: release manifest is missing"
-  grep -Fx "plugins/z-codex-router/bin/routerctl-$platform_token-$architecture_token" "$list_file" >/dev/null ||
-    fail "E_ARCHIVE_LAYOUT: matching routerctl binary is missing"
+    case "$type" in -|d) ;; *) fail E_ARCHIVE_TYPE "links and special files are forbidden" ;; esac
+  done <"$verbose"
 }
 
-same_tree() {
-  left=$1
-  right=$2
-  [ -z "$(find "$right" -type l -print -quit)" ] &&
-    diff -qr "$left" "$right" >/dev/null 2>&1 &&
-    [ -x "$right/plugins/z-codex-router/scripts/routerctl.sh" ] &&
-    [ -x "$right/plugins/z-codex-router/bin/routerctl-$PLATFORM-$ARCHITECTURE" ]
-}
-
-ensure_managed_directory() {
-  directory=$1
-  if [ -L "$directory" ]; then
-    fail "E_PATH_INVALID: managed directories cannot be symbolic links"
+find_package_root() {
+  extracted=$1
+  if [ -f "$extracted/plugins/z-codex-router/.codex-plugin/plugin.json" ]; then
+    printf '%s\n' "$extracted"
+    return
   fi
-  mkdir -p "$directory"
-  resolved_directory=$(CDPATH= cd -- "$directory" && pwd -P)
-  case "$resolved_directory/" in
-    "$CODEX_HOME_ARG/"*) ;;
-    *) fail "E_PATH_INVALID: managed directory escapes CODEX_HOME" ;;
-  esac
+  candidate=
+  count=0
+  for directory in "$extracted"/*; do
+    [ -d "$directory" ] || continue
+    if [ -f "$directory/plugins/z-codex-router/.codex-plugin/plugin.json" ]; then
+      candidate=$directory
+      count=$((count + 1))
+    fi
+  done
+  [ "$count" -eq 1 ] || fail E_ARCHIVE_LAYOUT "archive must contain exactly one package root"
+  printf '%s\n' "$candidate"
+}
+
+manifest_version() {
+  file=$1
+  version=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" |
+    sed -n '1p')
+  valid_version "$version" || fail E_RELEASE_VERSION "source manifest version is invalid"
+  printf '%s\n' "$version"
+}
+
+copy_marketplace_source() {
+  package=$1
+  destination=$2
+  [ -f "$package/.agents/plugins/marketplace.json" ] ||
+    fail E_SOURCE_INVALID "marketplace manifest is missing"
+  [ -d "$package/plugins/z-codex-router" ] ||
+    fail E_SOURCE_INVALID "plugin source is missing"
+  mkdir -p "$destination"
+  cp -R "$package/.agents" "$destination/"
+  cp -R "$package/plugins" "$destination/"
+}
+
+rewrite_cache_version() {
+  manifest=$1
+  cache_version=$2
+  temporary=$manifest.tmp-$$
+  if ! awk -v version="$cache_version" '
+    !done && $0 ~ /^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"[^"]*"[[:space:]]*,[[:space:]]*$/ {
+      print "  \"version\": \"" version "\","
+      done = 1
+      next
+    }
+    { print }
+    END { if (!done) exit 42 }
+  ' "$manifest" >"$temporary"; then
+    rm -f "$temporary"
+    fail E_SOURCE_INVALID "could not apply local cache build metadata"
+  fi
+  mv "$temporary" "$manifest"
+}
+
+run_routerctl() {
+  launcher=$1
+  shift
+  CODEX_HOME="$CODEX_HOME_ARG" sh "$launcher" --codex-home "$CODEX_HOME_ARG" "$@"
 }
 
 run_codex() {
   CODEX_HOME="$CODEX_HOME_ARG" "$CODEX_BIN" "$@"
 }
 
-run_routerctl() {
-  launcher="$SOURCE_ROOT/plugins/z-codex-router/scripts/routerctl.sh"
-  CODEX_HOME="$CODEX_HOME_ARG" "$launcher" --codex-home "$CODEX_HOME_ARG" "$@"
-}
-
-cleanup() {
-  status=$?
-  if [ "$status" -ne 0 ] && [ -n "$BACKUP_ROOT" ] && [ -d "$BACKUP_ROOT" ]; then
-    failed_root="${SOURCE_ROOT}.failed-$$"
-    if [ -d "$SOURCE_ROOT" ]; then
-      mv "$SOURCE_ROOT" "$failed_root" 2>/dev/null || true
-    fi
-    mv "$BACKUP_ROOT" "$SOURCE_ROOT" 2>/dev/null || true
-  fi
-  if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
-    rm -rf -- "$WORK_DIR"
-  fi
-  exit "$status"
-}
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --enable) ENABLE=1; shift ;;
     --version)
-      [ "$#" -ge 2 ] || fail "E_USAGE: --version needs a value"
+      [ "$#" -ge 2 ] || fail E_USAGE "--version needs a value"
       VERSION=$2
       shift 2
       ;;
     --base-url)
-      [ "$#" -ge 2 ] || fail "E_USAGE: --base-url needs a value"
+      [ "$#" -ge 2 ] || fail E_USAGE "--base-url needs a value"
       BASE_URL=$2
       shift 2
       ;;
     --codex-home)
-      [ "$#" -ge 2 ] || fail "E_USAGE: --codex-home needs a value"
+      [ "$#" -ge 2 ] || fail E_USAGE "--codex-home needs a value"
       CODEX_HOME_ARG=$2
       shift 2
       ;;
     --codex-bin)
-      [ "$#" -ge 2 ] || fail "E_USAGE: --codex-bin needs a value"
+      [ "$#" -ge 2 ] || fail E_USAGE "--codex-bin needs a value"
       CODEX_BIN=$2
       shift 2
       ;;
-    --resolve-platform)
-      [ "$#" -ge 3 ] || fail "E_USAGE: --resolve-platform needs OS and ARCH"
-      RESOLVE_OS=$2
-      RESOLVE_ARCH=$3
-      shift 3
+    --source)
+      [ "$#" -ge 2 ] || fail E_USAGE "--source needs a path"
+      SOURCE_PACKAGE=$2
+      shift 2
+      ;;
+    --legacy-cleanup-dry-run)
+      [ -z "$LEGACY_MODE" ] || fail E_USAGE "choose one legacy cleanup mode"
+      LEGACY_MODE=dry-run
+      shift
+      ;;
+    --legacy-cleanup)
+      [ -z "$LEGACY_MODE" ] || fail E_USAGE "choose one legacy cleanup mode"
+      LEGACY_MODE=clean
+      shift
       ;;
     -h|--help) usage; exit 0 ;;
-    *) fail "E_USAGE: unknown argument: $1" ;;
+    *) fail E_USAGE "unknown option: $1" ;;
   esac
 done
 
-if [ -n "$RESOLVE_OS" ]; then
-  resolve_platform "$RESOLVE_OS" "$RESOLVE_ARCH"
+valid_version "$VERSION" ||
+  fail E_VERSION_INVALID "expected a stable semantic version without leading v"
+if [ -z "$BASE_URL" ]; then
+  BASE_URL=https://github.com/$REPOSITORY/releases/download/v$VERSION
+fi
+BASE_URL=${BASE_URL%/}
+case "$BASE_URL" in https://*) ;; *) fail E_URL_INSECURE "--base-url must use HTTPS" ;; esac
+
+need_command awk
+need_command sed
+need_command grep
+need_command find
+need_command sort
+need_command uniq
+need_command tar
+need_command dd
+need_command od
+need_command tr
+need_command wc
+need_command mktemp
+need_command cp
+need_command mv
+need_command cut
+
+if [ -z "$CODEX_HOME_ARG" ]; then
+  [ -n "${HOME:-}" ] || fail E_CODEX_HOME_REQUIRED "set CODEX_HOME or HOME"
+  CODEX_HOME_ARG=$HOME/.codex
+fi
+case "$CODEX_HOME_ARG" in /*) ;; *) fail E_CODEX_HOME_INVALID "Codex home must be absolute" ;; esac
+[ "$CODEX_HOME_ARG" != "/" ] || fail E_CODEX_HOME_INVALID "filesystem root is unsafe"
+[ ! -L "$CODEX_HOME_ARG" ] || fail E_CODEX_HOME_INVALID "Codex home cannot be a link"
+mkdir -p "$CODEX_HOME_ARG"
+CODEX_HOME_ARG=$(CDPATH= cd -- "$CODEX_HOME_ARG" && pwd -P)
+WORK_DIR=$(mktemp -d "$CODEX_HOME_ARG/.zcr-bootstrap.XXXXXX")
+
+if [ -n "$SOURCE_PACKAGE" ]; then
+  [ -d "$SOURCE_PACKAGE" ] || fail E_SOURCE_INVALID "local source path does not exist"
+  PACKAGE_ROOT=$(CDPATH= cd -- "$SOURCE_PACKAGE" && pwd -P)
+else
+  need_command curl
+  asset=z-codex-router-$VERSION.tar.gz
+  sums=$WORK_DIR/SHA256SUMS
+  archive=$WORK_DIR/$asset
+  download_https "$BASE_URL/SHA256SUMS" "$sums"
+  DOWNLOADED_BYTES=$(wc -c <"$sums" | tr -d ' ')
+  expected=$(expected_checksum "$sums" "$asset")
+  download_https "$BASE_URL/$asset" "$archive"
+  DOWNLOADED_BYTES=$((DOWNLOADED_BYTES + $(wc -c <"$archive" | tr -d ' ')))
+  [ "$(sha256_file "$archive")" = "$expected" ] ||
+    fail E_CHECKSUM_MISMATCH "$asset"
+  validate_archive "$archive"
+  extracted=$WORK_DIR/extracted
+  mkdir "$extracted"
+  tar -xzf "$archive" -C "$extracted" ||
+    fail E_ARCHIVE_INVALID "source extraction failed"
+  [ -z "$(find "$extracted" -type l -print -quit)" ] ||
+    fail E_ARCHIVE_TYPE "extracted links are forbidden"
+  PACKAGE_ROOT=$(find_package_root "$extracted")
+fi
+
+assert_no_compiled_files "$PACKAGE_ROOT"
+for required in \
+  .agents/plugins/marketplace.json \
+  plugins/z-codex-router/.codex-plugin/plugin.json \
+  plugins/z-codex-router/release/manifest.json \
+  plugins/z-codex-router/core/router.md \
+  plugins/z-codex-router/scripts/routerctl.sh \
+  plugins/z-codex-router/scripts/routerctl.ps1; do
+  [ -f "$PACKAGE_ROOT/$required" ] ||
+    fail E_SOURCE_INVALID "required source file is missing: $required"
+done
+RELEASE_VERSION=$(manifest_version "$PACKAGE_ROOT/plugins/z-codex-router/release/manifest.json")
+PLUGIN_VERSION=$(manifest_version "$PACKAGE_ROOT/plugins/z-codex-router/.codex-plugin/plugin.json")
+[ "$RELEASE_VERSION" = "$VERSION" ] ||
+  fail E_RELEASE_VERSION "requested $VERSION but source contains $RELEASE_VERSION"
+[ "$PLUGIN_VERSION" = "$RELEASE_VERSION" ] ||
+  fail E_RELEASE_VERSION "plugin and release manifest versions differ"
+SOURCE_LAUNCHER=$PACKAGE_ROOT/plugins/z-codex-router/scripts/routerctl.sh
+sh -n "$SOURCE_LAUNCHER" || fail E_SOURCE_INVALID "POSIX control plane has a syntax error"
+
+if [ "$LEGACY_MODE" = dry-run ]; then
+  run_routerctl "$SOURCE_LAUNCHER" --source "$PACKAGE_ROOT/plugins/z-codex-router" \
+    legacy-cleanup --dry-run
+  exit 0
+elif [ "$LEGACY_MODE" = clean ]; then
+  run_routerctl "$SOURCE_LAUNCHER" --source "$PACKAGE_ROOT/plugins/z-codex-router" legacy-cleanup
   exit 0
 fi
 
-[ "$VERSION" = "latest" ] || valid_version "$VERSION" ||
-  fail "E_VERSION_INVALID: expected a semantic version without a leading v"
-
-if [ -z "$BASE_URL" ]; then
-  if [ "$VERSION" = "latest" ]; then
-    BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
-  else
-    BASE_URL="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+if [ -f "$CODEX_HOME_ARG/z-codex-router/current/format" ]; then
+  PREFLIGHT_ACTION=upgrade
+  if ! run_routerctl "$SOURCE_LAUNCHER" --source "$PACKAGE_ROOT/plugins/z-codex-router" \
+    upgrade --dry-run; then
+    fail E_ROUTER_PREFLIGHT "script upgrade preflight failed; user files were not changed"
+  fi
+else
+  PREFLIGHT_ACTION=install
+  if ! run_routerctl "$SOURCE_LAUNCHER" --source "$PACKAGE_ROOT/plugins/z-codex-router" dry-run; then
+    printf '%s\n' \
+      "NEXT_1=install.sh --legacy-cleanup-dry-run" \
+      "NEXT_2=install.sh --legacy-cleanup" \
+      "NEXT_3=install.sh --enable" >&2
+    fail E_ROUTER_PREFLIGHT "fresh-install preflight failed; user files were not changed"
   fi
 fi
-BASE_URL=${BASE_URL%/}
-case "$BASE_URL" in
-  https://*) ;;
-  *) fail "E_URL_INSECURE: --base-url must use HTTPS" ;;
-esac
-
-need_command uname
-need_command curl
-need_command tar
-need_command awk
-need_command grep
-need_command sed
-need_command sort
-need_command uniq
-need_command diff
-need_command find
-need_command cp
-need_command cut
-need_command tr
-need_command mktemp
-need_command wc
-
-platform_pair=$(resolve_platform "$(uname -s)" "$(uname -m)")
-PLATFORM=${platform_pair%-*}
-ARCHITECTURE=${platform_pair#*-}
-[ "$PLATFORM" != "windows" ] ||
-  fail "E_PLATFORM_UNSUPPORTED: use install.ps1 on Windows"
 
 command -v "$CODEX_BIN" >/dev/null 2>&1 ||
-  fail "E_CODEX_MISSING: install the Codex CLI first"
+  fail E_CODEX_MISSING "install the Codex CLI first"
 "$CODEX_BIN" plugin marketplace add --help >/dev/null 2>&1 ||
-  fail "E_CODEX_CAPABILITY: marketplace add is unavailable"
+  fail E_CODEX_CAPABILITY "plugin marketplace add is unavailable"
 "$CODEX_BIN" plugin add --help >/dev/null 2>&1 ||
-  fail "E_CODEX_CAPABILITY: plugin add is unavailable"
+  fail E_CODEX_CAPABILITY "plugin add is unavailable"
 
-if [ -z "$CODEX_HOME_ARG" ]; then
-  [ -n "${HOME:-}" ] || fail "E_CODEX_HOME_REQUIRED: set HOME or CODEX_HOME"
-  CODEX_HOME_ARG="$HOME/.codex"
+cache_token=$(date -u +%Y%m%dT%H%M%SZ)-$$
+CACHE_VERSION=$VERSION+codex.$cache_token
+CACHE_PARENT=$CODEX_HOME_ARG/z-codex-router-marketplaces
+CACHE_ROOT=$CACHE_PARENT/$CACHE_VERSION
+mkdir -p "$CACHE_PARENT"
+[ ! -e "$CACHE_ROOT" ] || fail E_CACHE_CONFLICT "local cache path already exists"
+cache_stage=$CACHE_PARENT/.stage-$cache_token
+copy_marketplace_source "$PACKAGE_ROOT" "$cache_stage"
+rewrite_cache_version "$cache_stage/plugins/z-codex-router/.codex-plugin/plugin.json" "$CACHE_VERSION"
+mv "$cache_stage" "$CACHE_ROOT"
+CACHE_LAUNCHER=$CACHE_ROOT/plugins/z-codex-router/scripts/routerctl.sh
+
+if ! run_codex plugin marketplace add "$CACHE_ROOT" --json; then
+  fail E_CODEX_REGISTRATION "marketplace registration failed; Router user files were not changed"
 fi
-case "$CODEX_HOME_ARG" in
-  /*) ;;
-  *) fail "E_CODEX_HOME_INVALID: use an absolute path" ;;
-esac
-case "/$CODEX_HOME_ARG/" in
-  *"/../"*) fail "E_CODEX_HOME_INVALID: paths containing .. are rejected" ;;
-esac
-[ "$CODEX_HOME_ARG" != "/" ] || fail "E_CODEX_HOME_INVALID: root is unsafe"
-
-umask 077
-mkdir -p "$CODEX_HOME_ARG"
-CODEX_HOME_ARG=$(CDPATH= cd -- "$CODEX_HOME_ARG" && pwd -P)
-[ "$CODEX_HOME_ARG" != "/" ] || fail "E_CODEX_HOME_INVALID: root is unsafe"
-if [ -n "${HOME:-}" ] && [ -d "$HOME" ]; then
-  RESOLVED_USER_HOME=$(CDPATH= cd -- "$HOME" && pwd -P)
-  [ "$RESOLVED_USER_HOME" != "$CODEX_HOME_ARG" ] ||
-    fail "E_CODEX_HOME_INVALID: the user home itself is unsafe"
-fi
-WORK_DIR=$(mktemp -d "$CODEX_HOME_ARG/.zcr-install.XXXXXX")
-trap cleanup 0
-trap 'exit 130' HUP INT TERM
-
-ASSET="z-codex-router-$PLATFORM-$ARCHITECTURE.tar.gz"
-SUMS_FILE="$WORK_DIR/SHA256SUMS"
-download_https "$BASE_URL/SHA256SUMS" "$SUMS_FILE"
-DOWNLOADED_BYTES=$(wc -c <"$SUMS_FILE" | tr -d ' ')
-EXPECTED=$(expected_checksum "$SUMS_FILE" "$ASSET")
-
-CACHE_DIR="$CODEX_HOME_ARG/z-codex-router-downloads"
-CACHE_ARCHIVE="$CACHE_DIR/$ASSET"
-ensure_managed_directory "$CACHE_DIR"
-[ ! -L "$CACHE_ARCHIVE" ] ||
-  fail "E_PATH_INVALID: cached archive cannot be a symbolic link"
-CACHE_HIT=false
-if [ -f "$CACHE_ARCHIVE" ] &&
-  [ "$(sha256_file "$CACHE_ARCHIVE")" = "$EXPECTED" ]; then
-  CACHE_HIT=true
-else
-  ARCHIVE_DOWNLOAD="$WORK_DIR/$ASSET"
-  download_https "$BASE_URL/$ASSET" "$ARCHIVE_DOWNLOAD"
-  DOWNLOADED_BYTES=$((DOWNLOADED_BYTES + $(wc -c <"$ARCHIVE_DOWNLOAD" | tr -d ' ')))
-  verify_checksum "$ARCHIVE_DOWNLOAD" "$EXPECTED"
-  mv -f "$ARCHIVE_DOWNLOAD" "$CACHE_ARCHIVE"
-fi
-verify_checksum "$CACHE_ARCHIVE" "$EXPECTED"
-
-LIST_FILE="$WORK_DIR/archive.list"
-VERBOSE_FILE="$WORK_DIR/archive.verbose"
-validate_archive "$CACHE_ARCHIVE" "$PLATFORM" "$ARCHITECTURE" "$LIST_FILE" "$VERBOSE_FILE"
-
-STAGE_ROOT="$WORK_DIR/source"
-mkdir -p "$STAGE_ROOT"
-tar -xzf "$CACHE_ARCHIVE" -C "$STAGE_ROOT" ||
-  fail "E_ARCHIVE_INVALID: extraction failed"
-[ -z "$(find "$STAGE_ROOT" -type l -print -quit)" ] ||
-  fail "E_ARCHIVE_TYPE: extracted links are rejected"
-
-MANIFEST="$STAGE_ROOT/plugins/z-codex-router/release/manifest.json"
-RESOLVED_VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | sed -n '1p')
-valid_version "$RESOLVED_VERSION" ||
-  fail "E_RELEASE_VERSION: release manifest version is invalid"
-if [ "$VERSION" != "latest" ] && [ "$RESOLVED_VERSION" != "$VERSION" ]; then
-  fail "E_RELEASE_VERSION: requested $VERSION but archive contains $RESOLVED_VERSION"
+if ! run_codex plugin add "$PLUGIN_NAME@$MARKETPLACE_NAME" --json; then
+  fail E_CODEX_REGISTRATION "plugin installation failed; Router user files were not changed"
 fi
 
-VERSION_PARENT="$CODEX_HOME_ARG/z-codex-router-marketplace-versions/$RESOLVED_VERSION"
-VERSION_ROOT="$VERSION_PARENT/$PLATFORM-$ARCHITECTURE"
-ensure_managed_directory "$VERSION_PARENT"
-VERSION_REUSED=false
-VERSION_BACKUP=""
-if [ -d "$VERSION_ROOT" ] && same_tree "$STAGE_ROOT" "$VERSION_ROOT"; then
-  VERSION_REUSED=true
-else
-  if [ -e "$VERSION_ROOT" ] && [ ! -d "$VERSION_ROOT" ]; then
-    fail "E_SOURCE_CONFLICT: persistent version path is not a directory"
-  fi
-  if [ -d "$VERSION_ROOT" ]; then
-    VERSION_BACKUP="$VERSION_PARENT/.previous-$PLATFORM-$ARCHITECTURE-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    mv "$VERSION_ROOT" "$VERSION_BACKUP"
-  fi
-  mv "$STAGE_ROOT" "$VERSION_ROOT"
-fi
-
-SOURCE_PARENT="$CODEX_HOME_ARG/z-codex-router-marketplaces"
-SOURCE_ROOT="$SOURCE_PARENT/$PLATFORM-$ARCHITECTURE"
-ensure_managed_directory "$SOURCE_PARENT"
-SOURCE_REUSED=false
-if [ -d "$SOURCE_ROOT" ] && same_tree "$VERSION_ROOT" "$SOURCE_ROOT"; then
-  SOURCE_REUSED=true
-else
-  if [ -e "$SOURCE_ROOT" ] && [ ! -d "$SOURCE_ROOT" ]; then
-    fail "E_SOURCE_CONFLICT: persistent marketplace path is not a directory"
-  fi
-  ACTIVE_STAGE="$WORK_DIR/active-source"
-  cp -R "$VERSION_ROOT" "$ACTIVE_STAGE"
-  if [ -d "$SOURCE_ROOT" ]; then
-    BACKUP_ROOT="$SOURCE_PARENT/.previous-$PLATFORM-$ARCHITECTURE-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    mv "$SOURCE_ROOT" "$BACKUP_ROOT"
-  fi
-  mv "$ACTIVE_STAGE" "$SOURCE_ROOT"
-fi
-
-run_codex plugin marketplace add "$SOURCE_ROOT" --json
-run_codex plugin add "$PLUGIN_NAME@$MARKETPLACE_NAME" --json
-
-if [ -f "$CODEX_HOME_ARG/z-codex-router/current.json" ]; then
-  ROUTER_ACTION=upgrade
-else
-  ROUTER_ACTION=install
-fi
-if [ "$ROUTER_ACTION" = "upgrade" ]; then
-  run_routerctl upgrade --dry-run
-  if [ "$ENABLE" -eq 1 ]; then
-    run_routerctl upgrade
-  fi
-else
-  run_routerctl dry-run
-  if [ "$ENABLE" -eq 1 ]; then
-    run_routerctl install
-  fi
-fi
 if [ "$ENABLE" -eq 1 ]; then
-  run_routerctl doctor
+  if [ "$PREFLIGHT_ACTION" = upgrade ]; then
+    run_routerctl "$CACHE_LAUNCHER" upgrade
+  else
+    run_routerctl "$CACHE_LAUNCHER" install
+  fi
+  if ! run_routerctl "$CACHE_LAUNCHER" doctor; then
+    if run_routerctl "$CACHE_LAUNCHER" rollback; then
+      fail E_ROUTER_VALIDATION "Doctor failed after write; Router state was rolled back"
+    fi
+    fail E_ROUTER_ROLLBACK_REQUIRED \
+      "Doctor failed after write and rollback did not complete; use the Recover Router skill"
+  fi
 fi
 
-printf 'ZCR_VERSION=%s\n' "$RESOLVED_VERSION"
-printf 'ZCR_PLATFORM=%s-%s\n' "$PLATFORM" "$ARCHITECTURE"
-printf 'ZCR_SOURCE=%s\n' "$SOURCE_ROOT"
-printf 'ZCR_VERSION_SOURCE=%s\n' "$VERSION_ROOT"
-printf 'ZCR_CACHE_HIT=%s\n' "$CACHE_HIT"
-printf 'ZCR_VERSION_REUSED=%s\n' "$VERSION_REUSED"
-printf 'ZCR_SOURCE_REUSED=%s\n' "$SOURCE_REUSED"
-printf 'ZCR_DOWNLOADED_BYTES=%s\n' "$DOWNLOADED_BYTES"
-printf 'ZCR_ROUTER_ACTION=%s\n' "$ROUTER_ACTION"
-printf 'ZCR_ENABLED=%s\n' "$([ "$ENABLE" -eq 1 ] && printf true || printf false)"
-if [ -n "$BACKUP_ROOT" ]; then
-  printf 'ZCR_PREVIOUS_SOURCE=%s\n' "$BACKUP_ROOT"
-fi
-if [ -n "$VERSION_BACKUP" ]; then
-  printf 'ZCR_PREVIOUS_VERSION_SOURCE=%s\n' "$VERSION_BACKUP"
-fi
+printf '%s\n' "ZCR_VERSION=$VERSION" "ZCR_CACHE_VERSION=$CACHE_VERSION" \
+  "ZCR_SOURCE=$CACHE_ROOT" "ZCR_DOWNLOADED_BYTES=$DOWNLOADED_BYTES" \
+  "ZCR_ROUTER_ACTION=$PREFLIGHT_ACTION" \
+  "ZCR_ENABLED=$([ "$ENABLE" -eq 1 ] && printf true || printf false)" \
+  "ZCR_NEXT_STEP=start-a-new-task"

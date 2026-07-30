@@ -1,7 +1,7 @@
 {
   "name": "z-codex-router",
   "version": "1.0.0",
-  "description": "面向 Codex 任务的本地 fail-closed 路由策略。",
+  "description": "纯脚本、可审计且 fail-closed 的 Codex 任务路由策略。",
   "author": {
     "name": "antonynz"
   },
@@ -17,8 +17,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Z Codex Router",
-    "shortDescription": "安全安装、启用、恢复与移除任务路由。",
-    "longDescription": "安装并启用、检查、恢复、安全升级或干净移除可移植的 Codex 全局路由策略。",
+    "shortDescription": "纯脚本安装、检查和管理 Codex 任务路由。",
+    "longDescription": "使用 POSIX sh 或 PowerShell 安装、检查、恢复、升级或移除可移植的 Codex 全局路由策略。",
     "developerName": "antonynz",
     "category": "Productivity",
     "capabilities": [
@@ -26,26 +26,19 @@
       "校验",
       "恢复",
       "安全卸载",
-      "显式 Safe Auto 审批 opt-in",
       "父协调 route receipt 与运行时三态校验",
-      "事务化版本升级",
+      "纯脚本事务化生命周期",
       "持久且经过校验的 tier-to-model 用户 override",
-      "完整 hash-managed 全局路由合同",
-      "启用范围内的持久独立根请求",
-      "感知 Desktop policy 的独立根 handoff"
+      "AGENTS 指令预算与 override 诊断",
+      "任务创建 pending 与失败分类"
     ],
     "websiteURL": "https://github.com/antonynz/z-codex-router",
     "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
     "termsOfServiceURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/terms.md",
     "defaultPrompt": [
       "全局安装并启用 Z Codex Router。",
-      "检查我的 Z Codex Router 安装。",
-      "校验父协调 route receipt 与运行时可观测性边界。",
-      "显示或校验 Z Codex Router 的有效 profile mapping；只有我明确要求时才 init、set、reset 或 restore override，并使用受管 backup，不要手工覆盖。",
-      "安装完整 hash-managed 全局路由合同；将明确 install/enable 或 upgrade 视为至多一次精确 create_thread 的持久请求。只有更严格的 host policy 拒绝持久请求时才再次询问，绝不 fallback 到 spawn_agent。",
-      "只有我明确要求时，才启用、检查或恢复 Z Codex Router 的 Safe Auto 审批策略；不得扩大 sandbox 或人类授权边界。",
-      "在 Z Codex Router 操作失败后安全恢复。",
-      "安全停用并卸载 Z Codex Router。"
+      "检查 AGENTS 指令预算、override 与 Router 状态。",
+      "安全恢复、升级或卸载 Z Codex Router。"
     ],
     "brandColor": "#2463EB"
   }

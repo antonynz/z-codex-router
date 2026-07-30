@@ -2,287 +2,242 @@
 
 [中文](#中文) · [English](#english)
 
-**Choose the right model for every Codex task—exactly, audibly, and fail-closed.**
+**为每个 Codex 任务选择合适的模型：可审计、可恢复、验证失败即停止。**
 
-**为每个 Codex 任务精确选择正确模型：可审计、可升级、验证失败即停止。**
+**Choose the right model for each Codex task: auditable, recoverable, and fail-closed.**
 
-Version / 版本：`1.0.0`
+公开版本 / Public version: `1.0.0`
 
 ## 中文
 
-Z Codex Router 是一个 skills-only Codex 插件。把
-`https://github.com/antonynz/z-codex-router` 发给具备终端、网络和写权限的 Agent，即可从
-公开 GitHub Release 快速安装；无需 clone 仓库或下载其他平台包。
-
-### 模型选择是核心
-
-1. **先判 tier：** A0–C3 表达副作用、任务明确度、影响面、状态复杂度与风险。
-2. **再选 mode：** Engineering、Product、Business Operations、Design、Testing 等 mode
-   定义领域边界与验收证据。
-3. **完整全局合同与父 receipt：** v1.0.0 的 hash-managed `AGENTS.md` block 写入完整十条
-   “全局路由”合同；明确的 install/enable 或 upgrade 同时成为持久的新/后台独立根任务请求。
-   工具接受时 commentary 只披露并立即调用一次 `create_thread`，不再次索取确认。只有父协调根
-   分类并写入 protocol 1 receipt；子线程不重分类、不递归创建，thread ID 只来自工具返回。
-4. **三态校验：** 可见且 exact 为 `verified`，可见不一致为 `mismatch` 并 fail closed；字段
-   缺失/接口不可用明确记为 `runtime_observability=unobservable`。非 C3 可在工具已接受目标
-   tuple 且无 reroute/failure 证据时按 requested/accepted 继续，但不声称 actual verified；C3
-   需当前 task/scope/action 的一次明确 route exception，mismatch 不能绕过。
-5. **可控升级：** stable profile 与 disabled candidate 分离；新模型只有在兼容性数据、显式
-   mapping 和评估状态都通过后才会被有意启用。
+Z Codex Router 是一个仅本地运行的 skills-only Codex 插件。运行时完全由 macOS/Linux 的 POSIX
+`sh` 与 Windows PowerShell 5.1+ 实现；仓库、插件和 Release 不包含 Rust、Python、平台可执行文件或
+其他编译产物。
 
 ![Z Codex Router 中文架构](docs/images/z-codex-router-architecture-zh.png)
 
-### 把这些提示词发给 Agent
+### 它解决什么
 
-#### 安装并启用
+- 按 A0–C3 的统一轴判断副作用、任务明确度、影响面、状态复杂度与风险。
+- 按 Engineering、Product、Business Operations、Design、Testing 等 mode 选择领域验收标准。
+- 用 parent-owned receipt、精确 model/effort 和运行时三态避免静默降级。
+- 正确区分任务创建结果：
 
-> 请从 https://github.com/antonynz/z-codex-router 的公开 GitHub Release 安装并启用 Z Codex
-> Router。不要要求我安装 CLI 或手工执行命令；不要 clone 仓库、不要使用 GitHub API；严格按 AGENT_INSTALL.md
-> 自动识别当前平台，只下载一个匹配的预编译包和 SHA256SUMS，校验后安装到持久 source，
-> 执行 dry-run、启用和 Doctor；确认受管 `AGENTS.md` block 包含完整“全局路由”合同及持久
-> `create_thread` 请求，并回报耗时、下载字节与结果。该请求最多创建一个同 scope 的精确独立根任务，
-> 不授权 sub-agent、第二任务或外部不可逆动作。测试不得写真实 Codex home；如果
-> 此会话只能安装插件或需要新会话，明确回报“已安装但未启用”及唯一下一步“调用 Enable Z Codex
-> Router”。
+  | 创建工具证据 | Router 状态 |
+  | --- | --- |
+  | `threadId` | `ROUTE_READY` |
+  | `clientThreadId` | `ROUTE_PENDING`，禁止重试 |
+  | 当前策略阻止 | `ROUTE_HANDOFF_REQUIRED` |
+  | destination 明确拒绝 tuple | `ROUTE_DESTINATION_TUPLE_UNAVAILABLE` |
+  | project/target/参数明确拒绝 | `ROUTE_INPUT_REJECTED` |
+  | 无法确认是否创建 | `ROUTE_OUTCOME_UNKNOWN`，禁止重试 |
 
-#### 安全自动审批（仅明确请求时）
+- 把受管路由块放在全局 `AGENTS.md` 前部（可在 UTF-8 BOM 后），并由 Doctor 检查实际指令来源、
+  字节范围、`project_doc_max_bytes`、全局 override 与项目/嵌套指令链。
 
-> 仅在我明确要求时，为已安装的 Z Codex Router 开启安全自动审批；先检查当前
-> `safe-auto status`/`safe-auto doctor`，再执行 `safe-auto enable`，并回报只管理
-> `sandbox_mode`、`approval_policy`、`approvals_reviewer` 三个键。若我要求停用或恢复，执行
-> `safe-auto restore`（drift 或事务冲突时停止）；不要因普通安装或路由启用而隐式开启，也不要
-> 扩大 sandbox 或替代高风险/不可逆动作的人类授权。不要要求我安装 CLI 或手工执行命令，由
-> Agent 在隔离检查后完成并回报结果。
+Router 是“指令路由”，不是宿主层模型切换器。只有当前用户明确请求创建新任务时，父任务才可调用
+一次 `create_thread`；持久指令本身不是创建授权。禁止自动降级、当前任务代做、pending/unknown 后
+重试或 fallback 到 `spawn_agent`。
 
-#### 升级（不要先卸载）
+### 安装资产
 
-> 请从 Z Codex Router 的 latest public GitHub Release 升级并启用现有安装。不要先卸载、不要手工编辑
-> `AGENTS.md`、不要删除当前安装或 Safe Auto；使用 latest bootstrap 安装新插件后，让**新 launcher**执行
-> `upgrade --dry-run`、`upgrade` 和 Doctor。它必须按当前合同验证受管 payload 与 managed block，
-> 原子替换为新版本，同时逐字保留我的 user `AGENTS.md` 内容、`config.toml`、Safe Auto 三键状态和
-> `z-codex-router-profile.toml` user override，并确认新 block 包含完整十条“全局路由”合同。若发现真正的
-> 受管内容 drift、损坏 profile 或中断事务，停止并
-> 报告稳定错误码和 Recover 路径；无效 override 也必须以 `E_PROFILE_OVERRIDE_INVALID` 停止，先修复或显式
-> `profile reset` 后再试。不得以 uninstall-first、`spawn_agent` 或手工覆盖绕过。
+GitHub v1.0.0 Release 只包含：
 
-升级写入完成后无需重启应用或 CLI；已运行的 `routerctl`/Doctor 可立即验证新状态。已有任务仍保留其已加载的
-指令和工具集；要让 Codex 载入更新后的插件 skills/tools，请新开一个任务。
+- `z-codex-router-1.0.0.tar.gz`：POSIX 安装与源码。
+- `z-codex-router-1.0.0.zip`：PowerShell 安装与相同源码。
+- `SHA256SUMS`：两份归档的 SHA-256。
 
-#### 映射与 desktop handoff 排障
+两份归档解包后的文件内容相同。公开 manifest、标签和 Release 均保持 `1.0.0`；本地 Codex marketplace
+cache 会使用 `1.0.0+codex.<timestamp>`，让同版本重装能够被新任务重新载入。
 
-> 显示并验证我的有效 Z Codex Router tier mapping；除非我明确要求，不要写 override。若我要求修改，使用
-> `profile init`、`profile set`、可恢复的 `profile reset` 或 `profile restore <backup>`，并报告 source、path 和
-> mapping hash。`profile reset` 返回的 backup 只能用 `profile restore` 恢复，不能手工覆盖文件。完整且身份匹配的
-> v1.0.0 受管 block 已是持久明确请求；若工具策略接受，commentary 后直接调用 `create_thread`，不要再次确认。
-> 只有 desktop/tool policy 明确拒绝该请求、要求当前轮请求、调用失败或工具不可用时才停止并返回对应 route
-> exception；不要 fallback 到 `spawn_agent`。需要 handoff 时只给出：
-> `请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。`
+### 安装并启用
 
-#### 恢复或回滚
+macOS/Linux：
 
-> 恢复 Z Codex Router。先运行 Doctor；若为 `E_TRANSACTION_PENDING` 或
-> `E_SAFE_AUTO_TRANSACTION_PENDING`，运行 `recover` 恢复原事务。若是普通路由事务，再运行 Doctor
-> 并报告 `OK_ENABLED`/`OK_NOT_ENABLED`；若是 safe-auto 事务，运行 `safe-auto doctor` 并要求
-> `OK_ACTIVE`/`OK_ABSENT`，再单独运行 Doctor 报告路由结果。路由未启用但 safe-auto active 时
-> Doctor 返回 `E_SAFE_AUTO_ACTIVE` 是独立 opt-in 的真实边界，不是 safe-auto 恢复失败。只操作受管块、
-> payload、状态和 safe-auto 三键，绝不覆盖我的其他 `AGENTS.md` 或
-> `config.toml` 内容；哈希或用户修改冲突时停止。只有我明确要求回滚已完成的启用或升级时，才运行
-> `rollback`。
-
-#### 停用并卸载
-
-> 停用并卸载 Z Codex Router。先运行 `safe-auto status`/`safe-auto doctor`；若为 active，在本次
-> 用户明确的“停用并卸载”范围内运行 `safe-auto restore`，若为 drift 则停止并保留配置。然后按
-> Doctor → `uninstall` → Doctor，要求最终为 `OK_NOT_ENABLED`；`uninstall` 必须先撤销精确受管块和
-> 状态、验证我的非受管内容不变、清理受管 payload/备份/状态。任一冲突或失败都保留插件和可恢复控制面，绝不先删插件；仅在最终验收后执行
-> `codex plugin remove z-codex-router@z-codex-router --json`。重复执行应安全，且不要删除整个
-> `AGENTS.md` 或 `config.toml`。
-
-普通“安装”只安装插件并执行 dry-run，不等于启用全局路由；只有明确“安装并启用”才会改变全局路由。
-
-### 安全自动审批（明确 opt-in）
-
-插件安装和路由启用不会修改 `config.toml`。用户明确选择后，使用已安装插件的
-`routerctl safe-auto enable`（或对应 launcher）才会原子、幂等地写入以下三个顶层键：
-
-```toml
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
+```sh
+version=1.0.0
+curl --fail --location \
+  --remote-name-all \
+  "https://github.com/antonynz/z-codex-router/releases/download/v${version}/z-codex-router-${version}.tar.gz" \
+  "https://github.com/antonynz/z-codex-router/releases/download/v${version}/SHA256SUMS"
+count=$(awk '$2 == "z-codex-router-1.0.0.tar.gz" { count++ } END { print count + 0 }' SHA256SUMS)
+expected=$(awk '$2 == "z-codex-router-1.0.0.tar.gz" { print $1 }' SHA256SUMS)
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "z-codex-router-${version}.tar.gz" | awk '{ print tolower($1) }')
+else
+  actual=$(shasum -a 256 "z-codex-router-${version}.tar.gz" | awk '{ print tolower($1) }')
+fi
+[ "$count" -eq 1 ] && [ "$actual" = "$expected" ] || exit 1
+tar -xzf "z-codex-router-${version}.tar.gz"
+cd "z-codex-router-${version}"
+sh install.sh --source . --enable
 ```
 
-`auto_review` 只替换符合条件的 reviewer，不扩大 sandbox，也不替代 Computer Use、凭证、支付、
-签署、发布、生产变更或其他高风险/不可逆外部动作的人类授权。`safe-auto status` 是只读状态检查，
-`safe-auto doctor` 对 drift fail closed，`safe-auto restore`（`disable` 同义）只恢复这三个键的
-启用前原值/缺失状态并保留其他用户配置。路由 `uninstall` 不会自动恢复权限配置；先显式 restore，
-再执行卸载。重复键、用户改动或事务漂移都会停止且不覆盖配置。
+Windows PowerShell 5.1+：
 
-### 支持平台
+```powershell
+$Version = "1.0.0"
+Invoke-WebRequest `
+  -Uri "https://github.com/antonynz/z-codex-router/releases/download/v$Version/z-codex-router-$Version.zip" `
+  -OutFile "z-codex-router-$Version.zip"
+Invoke-WebRequest `
+  -Uri "https://github.com/antonynz/z-codex-router/releases/download/v$Version/SHA256SUMS" `
+  -OutFile SHA256SUMS
+$Lines = @(Select-String -Path SHA256SUMS -Pattern "^([0-9a-f]{64})  z-codex-router-1\.0\.0\.zip$")
+if ($Lines.Count -ne 1) { throw "invalid SHA256SUMS" }
+$Expected = $Lines[0].Matches[0].Groups[1].Value
+$Actual = (Get-FileHash -LiteralPath "z-codex-router-$Version.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw "archive checksum mismatch" }
+Expand-Archive -LiteralPath "z-codex-router-$Version.zip" -DestinationPath .
+Set-Location "z-codex-router-$Version"
+.\install.ps1 -Source . -Enable
+```
 
-| macOS | Linux | Windows |
-| --- | --- | --- |
-| arm64、Intel amd64 | arm64、x86_64 amd64 | arm64、x86_64 amd64 |
+从本地 checkout 测试：
 
-每个 tag 由对应架构的 GitHub hosted runner 原生构建并验证。macOS arm64 另有本地 release 与
-隔离 lifecycle 实测。源码 checkout 故意不含二进制；可运行包位于 GitHub Releases。
+```sh
+sh install.sh --source . --enable
+```
 
-### 详细文档
+```powershell
+.\install.ps1 -Source . -Enable
+```
 
-- [Agent 安装、权限、安全、缓存、恢复、升级、回滚与卸载协议](AGENT_INSTALL.md)
-- [Router 架构](plugins/z-codex-router/core/router.md)
-- [安全策略](SECURITY.md)
-- [隐私](docs/privacy.md) · [条款](docs/terms.md) · [支持](docs/support.md)
-- [变更记录](CHANGELOG.md)
+普通安装（不带 enable）只注册带 cache build metadata 的插件 source，并执行只读 preflight；只有
+`--enable` / `-Enable` 才修改全局 Router state。安装、升级和卸载后必须新开任务，已有任务不会重新
+加载指令或技能。
 
-本项目不是 OpenAI 官方产品，尚未提交或上架 OpenAI marketplace。Apache-2.0 licensed.
+### 旧 Rust 安装边界
+
+脚本版不迁移旧状态。检测到旧 `current.json`、旧 transaction、旧受管块或旧权限状态时，fresh
+install 返回 `E_LEGACY_INSTALL_DETECTED`。严格顺序是：
+
+```sh
+sh install.sh --source . --legacy-cleanup-dry-run
+sh install.sh --source . --legacy-cleanup
+sh install.sh --source . --enable
+```
+
+```powershell
+.\install.ps1 -Source . -LegacyCleanupDryRun
+.\install.ps1 -Source . -LegacyCleanup
+.\install.ps1 -Source . -Enable
+```
+
+Cleanup 会先备份 `AGENTS.md`、存在时的 `config.toml` 和旧 Router state，只移除由 marker、version
+与 hash 共同识别的旧内容。块漂移、旧 transaction 或旧权限管理 state 会停止；不会猜测或删除用户
+权限键。
+
+### 控制面
+
+macOS/Linux：
+
+```sh
+plugins/z-codex-router/scripts/routerctl.sh doctor --cwd /path/to/project
+```
+
+Windows：
+
+```powershell
+plugins\z-codex-router\scripts\routerctl.ps1 doctor --cwd C:\path\to\project
+```
+
+生命周期命令：
+
+- `dry-run`
+- `install`
+- `doctor [--cwd PATH]`
+- `upgrade [--dry-run]`
+- `recover`
+- `rollback`
+- `uninstall`
+- `legacy-cleanup [--dry-run]`
+- `profile show|init|validate|set|reset|restore`
+
+脚本版没有审批、sandbox 或 `config.toml` 管理命令。Profile override 位于
+`<codex_home>/z-codex-router-profile.toml`，生命周期操作不会改写或删除它。
+
+### 数据保护
+
+- 状态使用 `z-codex-router/current/` 下的小文件、不可变 `versions/<version>/`、锁目录、transaction
+  目录和逐字节 backup。
+- 新安装保留 BOM、换行风格和原始用户 bytes；卸载只移除经 hash 验证的 managed prefix，并保留安装
+  后的用户编辑。
+- 非空全局 `AGENTS.override.md` 返回 `E_GLOBAL_OVERRIDE_ACTIVE`，不会被修改。
+- Recover 先校验 backup hash；只接受 transaction 记录的 before/intermediate/after 状态，未知
+  drift 停止。
+- Rollback 在完成后用户又修改过 `AGENTS.md` 时停止，绝不以旧整文件 backup 覆盖新用户内容。
+- Bootstrap 写入后的 Doctor 若失败，会先 rollback 到写入前状态；rollback 未完成时保留恢复证据并
+  转 Recover。
+
+### 开发与验证
+
+```sh
+sh scripts/test_all.sh
+```
+
+```powershell
+.\scripts\test_all.ps1
+```
+
+CI 在 macOS、Linux、Windows PowerShell 5.1 和 PowerShell 7 上运行生命周期、profile、budget、
+override、legacy、打包和保护路径测试。`verify_source` 扫描当前树与重写后的全部可达 Git blobs，
+拒绝 Mach-O、ELF、PE/EXE；PNG 明确保留。
+
+本项目不是 OpenAI 官方产品，也未声明已获 OpenAI Marketplace 审核或上架。Apache-2.0 licensed.
 
 ## English
 
-Z Codex Router is a skills-only Codex plugin. Give
-`https://github.com/antonynz/z-codex-router` to an Agent with terminal, network, and write access
-to install quickly from a public GitHub Release—without cloning the repository or downloading
-packages for other platforms.
-
-### Model selection is the product
-
-1. **Classify the tier:** A0–C3 captures side effects, task clarity, impact, state complexity, and
-   risk.
-2. **Choose the mode:** Engineering, Product, Business Operations, Design, Testing, and other modes
-   define domain boundaries and acceptance evidence.
-3. **Complete global contract and parent-owned receipts:** v1.0.0 writes the complete ten-rule global
-   routing contract into the hash-managed `AGENTS.md` block. An explicit install/enable or upgrade is
-   also the durable request for one exact new/background independent root. When the tool accepts it,
-   commentary is disclosure and the parent calls `create_thread` without asking again. Only the
-   coordinating parent classifies and writes protocol-1 receipts; children never reclassify or recurse,
-   and thread IDs come only from the tool return.
-4. **Three-state verification:** observable exact fields are `verified`; visible differences are
-   `mismatch` and fail closed; missing/unavailable fields are explicitly
-   `runtime_observability=unobservable`. Non-C3 work may continue as requested/accepted (without
-   claiming actual verification) only when the tool accepted the requested tuple and no reroute/failure
-   evidence is visible. C3 requires one explicit route exception scoped to the current task/scope/action;
-   mismatch can never be bypassed.
-5. **Upgrade deliberately:** stable and disabled candidate profiles stay separate. A new model is
-   enabled only after compatibility evidence, an explicit mapping, and evaluation state agree.
+Z Codex Router is a local-only, skills-only Codex plugin. Its runtime is implemented entirely in
+POSIX `sh` for macOS/Linux and Windows PowerShell 5.1+ for Windows. The repository, plugin, and
+Release contain no Rust, Python, platform executables, or other compiled artifacts.
 
 ![Z Codex Router architecture](docs/images/z-codex-router-architecture-en.png)
 
-### Paste these prompts to an Agent
+It classifies tasks on a shared A0–C3 axis, selects a domain mode, uses parent-owned receipts and
+exact model/effort matching, and treats missing runtime metadata as `unobservable` rather than a
+mismatch.
 
-#### Install and enable
+Task creation results are explicit: `threadId → ROUTE_READY`,
+`clientThreadId → ROUTE_PENDING`, policy denial → `ROUTE_HANDOFF_REQUIRED`, destination tuple denial
+→ `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`, input denial → `ROUTE_INPUT_REJECTED`, and uncertain
+outcome → `ROUTE_OUTCOME_UNKNOWN`. Pending and unknown outcomes must never be retried.
 
-> Install and enable Z Codex Router from the public GitHub Release at
-> https://github.com/antonynz/z-codex-router. Do not ask me to install a CLI or run commands;
-> do not clone the repository or use the GitHub API. Follow AGENT_INSTALL.md exactly: detect this
-> host, download only its one prebuilt
-> package plus SHA256SUMS, verify it, install a persistent source, run dry-run, enable, and Doctor,
-> confirm that the managed `AGENTS.md` block contains the complete global-routing contract and durable
-> `create_thread` request, then report elapsed time, downloaded bytes, and results. The request permits
-> at most one exact independent root for the same scope; it does not authorize sub-agents, a second task,
-> or external irreversible actions. Never target my real Codex home in tests.
-> If this session can only install the plugin or needs a new session, explicitly report “installed
-> but not enabled” and the single next step: invoke Enable Z Codex Router.
+The managed routing block is written at the start of global `AGENTS.md` (after an optional UTF-8
+BOM). Doctor reports its byte range, effective `project_doc_max_bytes`, the effective global
+instruction source, global override shadowing, and the project/nested instruction chain for
+`doctor --cwd`.
 
-#### Safe automatic approval (only on explicit request)
+The v1.0.0 Release has exactly two universal source assets plus checksums:
 
-> Only when I explicitly ask, enable safe automatic approval for the installed Z Codex Router. First
-> check `safe-auto status`/`safe-auto doctor`, then run `safe-auto enable`, and report that it manages
-> only `sandbox_mode`, `approval_policy`, and `approvals_reviewer`. If I ask to disable or restore it,
-> run `safe-auto restore` and stop on drift or a pending transaction. Never infer this opt-in from
-> ordinary installation/routing enablement, expand the sandbox, or replace human authorization for
-> high-risk or irreversible actions. Do not ask me to install a CLI or run commands manually; perform
-> the isolated checks and report the result.
+- `z-codex-router-1.0.0.tar.gz`
+- `z-codex-router-1.0.0.zip`
+- `SHA256SUMS`
 
-#### Upgrade (do not uninstall first)
+Public manifests and the tag remain `1.0.0`. Local Codex marketplace copies use
+`1.0.0+codex.<timestamp>` as cache metadata.
 
-> Upgrade and enable my existing Z Codex Router from the latest public GitHub Release. Do not uninstall
-> first, hand-edit `AGENTS.md`, delete the old version, or change Safe Auto. After the latest bootstrap
-> installs the new plugin, use the **new launcher** for `upgrade --dry-run`, `upgrade`, and Doctor. It
-> must validate managed payloads and blocks against the current contract, atomically replace them with the
-> new version, and preserve my user `AGENTS.md` content, `config.toml`, Safe Auto three-key state, and
-> `z-codex-router-profile.toml` override byte-for-byte while installing the complete ten-rule
-> global-routing contract. On genuine managed drift, a malformed profile,
-> an invalid override, or an interrupted transaction, stop with the stable error and Recover path (repair or
-> explicitly `profile reset` an invalid override before retry); never use uninstall-first,
-> `spawn_agent`, or a manual overwrite to bypass it.
+An old Rust/prebuilt installation is never migrated implicitly. Run an explicit legacy cleanup
+dry-run, confirm the cleanup, and then perform a fresh install. Cleanup backs up user instructions,
+configuration, and old Router state before removing only marker/version/hash-identified Router
+content. Drift or an unfinished legacy transaction stops without overwriting user files.
 
-No application or CLI restart is needed after the upgrade writes complete; `routerctl` and Doctor can
-verify the new state immediately. Existing tasks retain instructions/tools already loaded into their
-context. Start a new task to pick up updated plugin skills and tools.
+The script control plane supports install, Doctor, upgrade, recover, rollback, uninstall,
+legacy cleanup, and profile management. It has no approval, sandbox, or `config.toml` management
+commands.
 
-#### Mapping and desktop-handoff troubleshooting
+If post-write Doctor validation fails, bootstrap rolls back to the pre-write Router state; an
+incomplete rollback preserves recovery evidence and stops.
 
-> Show and validate my effective Z Codex Router tier mapping; do not write an override unless I explicitly
-> ask. If I request a change, use `profile init`, `profile set`, recoverable `profile reset`, or
-> `profile restore <backup>`, and report source, path, and mapping hash. A reset backup must be restored with
-> `profile restore`, never by manually overwriting the file. An intact, identity-matched v1.0.0 managed
-> block is already my durable explicit request: when tool policy accepts it, disclose in commentary and call
-> `create_thread` without asking again. Only when desktop/tool policy explicitly rejects that request,
-> requires a current-turn request, the call fails, or the tool is unavailable, stop with the corresponding
-> route exception; never fall back to `spawn_agent`. If handoff is required, return only:
-> `Create a new independent Codex task for the same current scope using <model> / <effort>, carrying forward the current route receipt; do not create a sub-agent or a second task.`
+Run the full suites with:
 
-#### Recover or roll back
-
-> Recover Z Codex Router. Run Doctor first; if it returns `E_TRANSACTION_PENDING` or
-> `E_SAFE_AUTO_TRANSACTION_PENDING`, run `recover` to restore the original transaction. For a routing
-> transaction, run Doctor and report `OK_ENABLED`/`OK_NOT_ENABLED`; for a safe-auto transaction, run
-> `safe-auto doctor` and require `OK_ACTIVE`/`OK_ABSENT`, then run general Doctor separately. A route-
-> absent installation with safe-auto active may honestly return `E_SAFE_AUTO_ACTIVE` from general Doctor;
-> that is not a failed safe-auto recovery. Touch only managed blocks, payload, state, and the safe-auto three keys; never overwrite
-> my other `AGENTS.md` or `config.toml` content, and stop on a hash or
-> user-change conflict. Run `rollback` only when I explicitly ask to undo a completed enablement
-> or upgrade.
-
-#### Disable and uninstall
-
-> Disable and uninstall Z Codex Router. First run `safe-auto status`/`safe-auto doctor`; if it is active,
-> explicitly run `safe-auto restore` as part of this user-requested disable-and-uninstall operation; if
-> it reports drift, stop and preserve the configuration. Then use the exact order Doctor → `uninstall` →
-> Doctor and require final `OK_NOT_ENABLED`; `uninstall` must first revoke only the exact managed block and
-> state, verify my unmanaged content is unchanged, and clean managed payload/backups/state. On any
-> conflict or failure, retain the plugin and recoverable control plane—never remove the plugin
-> first. Only after final acceptance run `codex plugin remove z-codex-router@z-codex-router --json`.
-> It must be safe to repeat and must not delete my whole `AGENTS.md` or `config.toml`.
-
-An ordinary “install” installs the plugin and performs a dry-run; it does not enable global routing.
-Only explicit “install and enable” may change global routing.
-
-### Safe automatic approval (explicit opt-in)
-
-Plugin installation and routing enablement never modify `config.toml`. Only an explicit
-`routerctl safe-auto enable` invocation writes these three top-level keys atomically and idempotently:
-
-```toml
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
+```sh
+sh scripts/test_all.sh
 ```
 
-Auto-review only substitutes the eligible approval reviewer. It does not expand the sandbox or grant
-human authorization for Computer Use, credentials, payment, signing, publishing, production changes,
-or other high-risk/irreversible external actions. Use `safe-auto status` for a read-only state check,
-`safe-auto doctor` to fail closed on drift, and `safe-auto restore` (`disable` is an alias) to restore
-only the three pre-enable values while preserving unrelated user configuration. Routing uninstall
-does not implicitly restore permission configuration; restore it explicitly first. Duplicate keys,
-user edits, and transaction hash drift stop without overwriting config.
+```powershell
+.\scripts\test_all.ps1
+```
 
-### Supported platforms
-
-| macOS | Linux | Windows |
-| --- | --- | --- |
-| arm64, Intel amd64 | arm64, x86_64 amd64 | arm64, x86_64 amd64 |
-
-Each tag is built and validated on a native GitHub-hosted runner for its architecture. macOS arm64
-also has a local release-build and isolated-lifecycle test. Source checkouts intentionally contain
-no binary; runnable packages are published in GitHub Releases.
-
-### Detailed documentation
-
-- [Agent install, permissions, security, cache, recovery, upgrade, rollback, and uninstall protocol](AGENT_INSTALL.md)
-- [Router architecture](plugins/z-codex-router/core/router.md)
-- [Security policy](SECURITY.md)
-- [Privacy](docs/privacy.md) · [Terms](docs/terms.md) · [Support](docs/support.md)
-- [Changelog](CHANGELOG.md)
-
-This is not an official OpenAI product and has not been submitted to or listed in the OpenAI
-marketplace. Licensed under Apache-2.0.
+This is not an official OpenAI product and does not claim OpenAI Marketplace review or listing.
+Licensed under Apache-2.0.

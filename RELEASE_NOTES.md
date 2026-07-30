@@ -1,19 +1,25 @@
 # Z Codex Router v1.0.0
 
-v1.0.0 是重新定义后的首个公开基线。此前没有实际用户，本次发布不保留旧标签所表达的迁移历史。
+本次 v1.0.0 重新定义为纯脚本公开基线：
 
-- 修复新设备首次安装并启用后仍返回 `ROUTE_HANDOFF_REQUIRED`、必须再次发消息才能创建独立 Codex
-  任务的问题。hash-managed `AGENTS.md` block 现在原样携带完整十条 `## 全局路由` 合同；用户明确
-  install/enable 或 upgrade 即形成持久请求。tool policy 接受时，创建前 commentary 只作信息披露，
-  父协调根立即进行同 scope、精确 tuple、最多一次的 `create_thread` 调用，不再要求第二次确认。
-- 权限边界不扩大：该请求不授权 sub-agent、第二个任务、sandbox 扩权、外部不可逆动作，也不替代
-  人类审批。host policy 明确拒绝持久请求、参数不支持、工具不可用或调用失败时仍 fail closed，并返回
-  对应 route exception。
-- 完整合同中的历史路径 `$CODEX_HOME/routing/router.md` 在受管入口中明确映射到不可变活动版本
-  `z-codex-router/versions/<current.version>/core/router.md`；新设备不需要额外的未版本化文件。
-- Doctor、upgrade、rollback 与 recover 统一校验当前 payload、profile、managed block 和 state，
-  不再携带未发布基线的旧迁移分支。
-- plugin skill、default prompt、Agent 安装协议与辅助文档以中文为主；`create_thread`、route receipt、
-  model/effort、Doctor、Safe Auto、错误码与机器协议 token 保留英文。
-- Release asset 覆盖 darwin/linux/windows 的 amd64/arm64 六个平台。tag workflow 会原生构建，
-  生成 `SHA256SUMS`，验证完整 payload chain 后发布。
+- 运行时改为 macOS/Linux POSIX `sh` 与 Windows PowerShell 5.1+；删除 Rust、Cargo、Python
+  实现/测试、平台 launcher、预编译可执行文件和审批配置命令。
+- Release 只发布内容相同的 `z-codex-router-1.0.0.tar.gz`、
+  `z-codex-router-1.0.0.zip` 与 `SHA256SUMS`。
+- 新 `script-v1` 状态使用目录化小文件、不可变 payload、锁、逐字节 backup 和
+  before/intermediate/after hash transaction；Recover 会先验证 backup hash。
+- Managed block 前置到全局 `AGENTS.md`，保留 UTF-8 BOM、CRLF/LF 与用户 bytes。Doctor 新增
+  `--cwd`、global override、block byte range、有效 `project_doc_max_bytes` 与 project instruction
+  chain 诊断。
+- 旧 Rust/prebuilt 安装不迁移：必须执行显式 legacy cleanup dry-run、确认 cleanup，再 fresh
+  install。Cleanup 先备份用户指令、配置和旧 state。
+- 任务创建结果区分 `ROUTE_READY`、`ROUTE_PENDING`、`ROUTE_HANDOFF_REQUIRED`、
+  `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`、`ROUTE_INPUT_REJECTED` 与
+  `ROUTE_OUTCOME_UNKNOWN`；pending/unknown 禁止重试。
+- 公开 manifest/tag/Release 保持 `1.0.0`；本地 Codex marketplace cache 允许
+  `1.0.0+codex.<timestamp>`。
+- Git 历史已重写以清除所有编译可执行 blob。现有 clone 应重新 clone，或显式重新获取并重置到新
+  `main`；旧提交 ID 不再有效。
+
+本项目不会修改 `config.toml`，不会扩大 sandbox，也不替代用户对新任务、发布、生产或其他外部
+不可逆动作的明确授权。

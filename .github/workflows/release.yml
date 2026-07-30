@@ -1,141 +1,102 @@
-name: Release 打包
+name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 维护者批准后要打包的版本标签
-        required: true
   push:
-    branches: [main]
-    tags: ["v*"]
+    tags:
+      - "v*"
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  test:
+    name: Release gate (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15-intel, platform: darwin, arch: amd64, rust_target: x86_64-apple-darwin }
-          - { os: macos-15, platform: darwin, arch: arm64, rust_target: aarch64-apple-darwin }
-          - { os: ubuntu-latest, platform: linux, arch: amd64, rust_target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, platform: linux, arch: arm64, rust_target: aarch64-unknown-linux-gnu }
-          - { os: windows-latest, platform: windows, arch: amd64, rust_target: x86_64-pc-windows-msvc }
-          - { os: windows-11-arm, platform: windows, arch: arm64, rust_target: aarch64-pc-windows-msvc }
+          - name: macOS POSIX sh
+            os: macos-latest
+            shell: sh
+            command: sh scripts/test_all.sh
+          - name: Linux POSIX sh
+            os: ubuntu-latest
+            shell: sh
+            command: sh scripts/test_all.sh
+          - name: Windows PowerShell 5.1
+            os: windows-latest
+            shell: powershell
+            command: .\scripts\test_all.ps1
+          - name: PowerShell 7
+            os: windows-latest
+            shell: pwsh
+            command: ./scripts/test_all.ps1
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+          fetch-depth: 0
+      - name: Run script-only release gate
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.command }}
+
+  package:
+    name: Build universal source archives
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          targets: ${{ matrix.rust_target }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: 构建 Release 二进制
-        env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
-        run: cargo build --locked --release --target "${{ matrix.rust_target }}"
-      - name: 暂存 plugin asset
-        shell: bash
+          fetch-depth: 0
+      - name: Verify tag and source version
+        shell: sh
         run: |
-          binary="target/${{ matrix.rust_target }}/release/routerctl"
-          if [ "${{ matrix.platform }}" = windows ]; then binary="${binary}.exe"; fi
-          python scripts/package_release.py \
-            --binary "$binary" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
-            --out "dist/${{ matrix.platform }}-${{ matrix.arch }}" \
-            --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
-      - name: 使用原生 package 测试 POSIX bootstrap
-        if: matrix.platform != 'windows'
-        shell: bash
+          expected=${GITHUB_REF_NAME#v}
+          release=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' plugins/z-codex-router/release/manifest.json | sed -n '1p')
+          plugin=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' plugins/z-codex-router/.codex-plugin/plugin.json | sed -n '1p')
+          test "$expected" = "1.0.0"
+          test "$release" = "$expected"
+          test "$plugin" = "$expected"
+      - name: Verify rewritten history and package sources
+        shell: sh
         run: |
-          sh -n install.sh
-          python3 scripts/test_bootstrap.py \
-            --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}"
-      - name: 使用原生 package 测试 PowerShell bootstrap
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          ./scripts/test_bootstrap.ps1 `
-            -Archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" `
-            -Arch "${{ matrix.arch }}"
+          sh scripts/verify_source.sh --history
+          sh scripts/package_release.sh --out dist
+          sh scripts/test_release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+          name: z-codex-router-1.0.0-source
+          path: |
+            dist/z-codex-router-1.0.0.tar.gz
+            dist/z-codex-router-1.0.0.zip
+            dist/SHA256SUMS
           if-no-files-found: error
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+  publish:
+    name: Replace GitHub v1.0.0 Release
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - uses: actions/download-artifact@v4
         with:
-          pattern: z-codex-router-*
+          name: z-codex-router-1.0.0-source
           path: dist
-          merge-multiple: true
-      - name: 验证标签并组装公开 assets
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import pathlib
-          import tomllib
-
-          root = pathlib.Path(".")
-          cargo = tomllib.loads((root / "Cargo.toml").read_text())
-          plugin = json.loads(
-              (root / "plugins/z-codex-router/.codex-plugin/plugin.json").read_text()
-          )
-          release = json.loads(
-              (root / "plugins/z-codex-router/release/manifest.json").read_text()
-          )
-          versions = {cargo["package"]["version"], plugin["version"], release["version"]}
-          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
-          if versions != {expected}:
-              raise SystemExit(f"tag/version mismatch: tag={expected} files={versions}")
-          PY
-          cp install.sh install.ps1 AGENT_INSTALL.md dist/
-          (
-            cd dist
-            sha256sum \
-              z-codex-router-*.tar.gz \
-              install.sh install.ps1 AGENT_INSTALL.md |
-              sort -k2 > SHA256SUMS
-          )
-          python3 scripts/verify_release_assets.py dist
-      - name: 创建公开 GitHub Release
+      - name: Delete old Release and create script-only Release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
+        shell: sh
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release already exists: $GITHUB_REF_NAME" >&2
-            exit 1
+            gh release delete "$GITHUB_REF_NAME" --yes
           fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --latest \
             --title "Z Codex Router $GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md \
-            dist/z-codex-router-*.tar.gz \
-            dist/SHA256SUMS \
-            dist/install.sh \
-            dist/install.ps1 \
-            dist/AGENT_INSTALL.md
+            dist/z-codex-router-1.0.0.tar.gz \
+            dist/z-codex-router-1.0.0.zip \
+            dist/SHA256SUMS

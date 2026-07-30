@@ -28,19 +28,23 @@ stage_reclassification = "parent-only-same-thread"
 invalid_or_forged = "reject"
 
 [observability]
-states = ["observable", "unobservable"]
+states = ["verified", "mismatch", "unobservable"]
 observable_exact = "verified"
 observable_mismatch = "mismatch-fail-closed"
 unobservable_non_c3 = "requested-accepted-unverified"
 unobservable_c3 = "block-until-explicit-one-time-route-exception"
 
-[independent_root_authorization]
-## 精确受管 AGENTS.md block 记录用户明确的 install/enable 或 upgrade 请求。
-## 更严格的 host policy 仍然优先，并要求 handoff。
-source = "explicit-install-enable-or-upgrade-managed-block"
-scope = "one-per-task-exact-route"
-repeat_confirmation = "not-required-when-host-accepts-durable-request"
-policy_conflict = "route-handoff-required"
+[creation]
+authorization = "explicit-current-user-request"
+model_effort_parameter = "model+thinking"
+ready = "threadId:ROUTE_READY"
+pending = "clientThreadId:ROUTE_PENDING-no-retry"
+policy_denied = "ROUTE_HANDOFF_REQUIRED"
+destination_tuple_denied = "ROUTE_DESTINATION_TUPLE_UNAVAILABLE"
+input_rejected = "ROUTE_INPUT_REJECTED"
+outcome_unknown = "ROUTE_OUTCOME_UNKNOWN-no-retry"
+silent_fallback = false
+spawn_agent_fallback = false
 
 [selection]
 stable_profile = "stable/current-gpt-5.6-reference.toml"

@@ -2,40 +2,48 @@
 
 ## 写入与保护
 
-- 写入前说明目标、读取输入、dry-run、计划变更、回滚边界和验收。
-- 只管理具有稳定 ID、版本和哈希的内容；保留未知键、注释、用户块和无关文件。
-- 普通安装与路由 enable 不读取或修改 `config.toml`。只有用户明确调用 `safe-auto enable` 才管理
-  `sandbox_mode`、`approval_policy`、`approvals_reviewer` 三个顶层键；启用前保存每个键的原值/缺失状态，
-  原子写入并幂等。restore 只恢复这三个键，保留用户之后新增或修改的其他键；检测到 managed-key
-  drift、重复 TOML key 或事务 hash 漂移时 fail closed。safe-auto 必须在路由 uninstall 前显式 restore，
-  路由卸载不会自动删除或回写用户权限配置。
-- `approvals_reviewer = "auto_review"` 只替换符合条件的 reviewer；不扩大 `sandbox_mode = "workspace-write"`，
-  不替代 Computer Use、凭证、支付、签署、发布、生产变更或其他不可逆外部动作的人类授权。
-- `recover` 同时处理路由 `E_TRANSACTION_PENDING` 与 safe-auto `E_SAFE_AUTO_TRANSACTION_PENDING`；
-  safe-auto journal 的 before/after hash 未知或发生用户漂移时必须保留配置并停止。
-- 版本目录不可变；current pointer 必须原子切换；事务先写 journal 和备份；同版本重复安装零 diff；卸载只删除 ID/哈希均匹配的受管内容。
-- tier→model/effort user override 是 `<codex_home>/z-codex-router-profile.toml`，位于不可变版本 payload 外。install、upgrade、recover、rollback、uninstall 都不得改写或删除它；只有显式 `profile init`、`profile set`、`profile reset`、`profile restore <backup>` 管理它。reset 必须先在 `<codex_home>/z-codex-router-profile-backups/` 原子写入可恢复 TOML 和 SHA-256 metadata；restore 只接受该目录内的常规 backup，验证 metadata/hash 和完整 mapping，拒绝 path escape、backup drift 或已有 override drift 后才原子恢复。有效 source、路径和 mapping hash 由 Doctor 报告；无效 override 返回 `E_PROFILE_OVERRIDE_INVALID`，不读取或泄露其他配置。
+- 写入前说明目标、读取输入、dry-run、计划变更、恢复边界和验收。
+- 只管理具有稳定 ID、版本、格式和 SHA-256 的内容；保留未知文件、用户指令、BOM、换行风格及
+  `config.toml`。
+- 新安装把受管块放在全局 `AGENTS.md` 开头；非空全局 `AGENTS.override.md` 返回
+  `E_GLOBAL_OVERRIDE_ACTIVE`，绝不修改 override。
+- 状态使用 `z-codex-router/current/` 下的目录化小文件、不可变 `versions/<version>/`、锁目录、
+  transaction 目录和逐字节 backup；不依赖通用 JSON/TOML runtime。
+- `doctor --cwd <path>` 报告实际全局 instruction source、受管块字节范围、有效
+  `project_doc_max_bytes`、项目/嵌套指令数量和 profile source/hash。受管块超出预算时返回
+  `E_MANAGED_BLOCK_OUTSIDE_INSTRUCTION_BUDGET`。
+- 写入型生命周期不解析或修改 `config.toml`；Doctor 只读取 `project_doc_max_bytes`，legacy cleanup
+  只做逐字节 backup。旧 safe-auto 命令已删除。检测到 legacy safe-auto state 时，
+  `legacy-cleanup` 要求先使用旧控制面 restore，绝不猜测或删除权限键。
+- Profile override 位于不可变 payload 外。只有显式 profile 子命令管理它；reset/restore 使用受管
+  backup 与 SHA-256 metadata。
 
 ## 失败处理
 
-- 拒绝危险路径、路径遍历、权限不足、损坏事务、修改过的受管块、缺失 profile、schema 不匹配、disabled candidate、运行时/平台不兼容和模糊配置。
-- 以稳定错误码报告失败，保留原始内容和可恢复证据。不要手工绕过 installer、不要隐式回退到不同 profile、不要无限重试。
-- `profile init`/`set`/`validate` 对 user override 要求完整的 A0–C3 mapping、严格 A0 语义、非空 model/effort、受支持 effort 和无重复 TOML key；未来 model token 可以通过本地语法验证，但在 `create_thread` 时仍须与实际 tool schema/allowlist/角色锁/环境权限求交集。交集为空返回 `ROUTE_PROFILE_RUNTIME_UNAVAILABLE`，不能因为 override 存在而猜测可用性或降级。
-- 对失败升级先判断是需求、设计、执行还是环境问题；环境阻塞只记录并上报，不借由更高 tier 伪造完成。
+- 拒绝危险路径、链接、路径遍历、重复或漂移受管块、未完成事务、损坏 profile、无效 payload、
+  global override 遮蔽、预算不可读和 legacy 状态。
+- 失败返回稳定错误码，并保留用户文件和可恢复证据。不得手工绕过、uninstall-first、静默 fallback、
+  无限重试或删除整个 `AGENTS.md`。
+- `recover` 先校验 backup hash 与 transaction before hash；当前 AGENTS 只接受 before/after，
+  current state 只接受 before/intermediate/after。其他值是用户/外部 drift，必须停止。
+- `rollback` 若安装完成后用户继续修改过 `AGENTS.md`，则 fail closed；不得用旧整文件 backup 覆盖
+  新用户内容。
+- 旧 Rust 安装不迁移。新安装返回 `E_LEGACY_INSTALL_DETECTED`，必须按
+  `legacy-cleanup --dry-run` → `legacy-cleanup` → fresh install 的顺序处理。
 
-## 路由回执（route receipt）边界
+## Route create 结果
 
-- receipt protocol 1 是父协调根在实际调用 `create_thread` 时生成的结构化交接，不是用户可自声明的权限或密码学凭证。父必须把 `classification_owner=parent`、`creation_tool=create_thread`、`target_tier`、`requested_model`、`requested_effort`、`automatic_root_creations=1`、`task_scope` 和 `acceptance` 写入创建提示，并以工具返回值和当前 scope 交叉核对。
-- v1.0.0 完整、hash/version 匹配的受管 `AGENTS.md` block 将用户明确的 install/enable 或 upgrade 请求记录为持久且受限的独立根创建请求。若宿主规则只要求“用户明确请求创建新任务”，该请求已满足条件，父不得再次索取确认；它只覆盖同一 task scope、精确 tuple、一次 `create_thread` 创建，不覆盖 sub-agent、第二个任务、外部不可逆动作、sandbox 扩权或人类审批。block 缺失、drift 或身份不匹配时不得使用。
-- 子线程只执行父已确认的 scope；它不得重新分类、递归创建线程或用用户文本 receipt 绕过无效/越界检查。receipt 无效、创建失败、可见 runtime mismatch 和需要第二次自动创建时，停止并回报父。
-- runtime metadata 有 `verified`、`mismatch`、`unobservable` 三态：字段可见且 exact 才是 verified；可见不一致是 mismatch 并 fail closed；字段缺失/接口不可用只能标 unobservable，不能写成 mismatch。非 C3 在已确认工具接受 tuple 且无 reroute/failure 证据时可按 requested/accepted 继续，但不得声称 actual verified。
-- C3/高风险在 unobservable 时必须在外部不可逆动作前阻塞，直到具备权限的用户对当前 task/scope/action 明确批准一次 route exception；mismatch 不能由例外绕过，也不能创建第二线程。该批准不继承到其他线程、scope 或动作，不扩大 sandbox/人类授权。
-- C1 方案固定后的实现阶段由父重新分类；有已创建线程时只用同一线程 follow-up 更新 receipt，整个任务的自动根创建计数保持 `<=1`。
-- Desktop developer policy、tool schema 和 runtime permission 高于路由。父先分类并冻结同一 scope/model/effort/parent-owned receipt，再检查当前策略是否允许 `create_thread`；follow-up 不得重分类。仅要求“用户明确请求新任务”的规则由完整 v1.0.0 受管 block 满足。若策略明确要求当前轮请求、拒绝持久请求或以更严格规则禁止本次调用，父不得尝试绕过、不得改由当前根或 `spawn_agent`；返回 `ROUTE_HANDOFF_REQUIRED`，且只给出填入已冻结 tuple 的直接命令：`请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。`。收到该明确 follow-up 后，父只能沿用同一 scope/model/effort 和同一 parent-owned receipt 进行一次创建。
-- 若已允许的 `create_thread` 调用失败，返回 `ROUTE_CREATE_FAILED`；工具不可用时返回 `ROUTE_CREATE_UNAVAILABLE`。两者均停止、不得第二次自动创建、不得 fallback 到 `spawn_agent`。最终回报必须作 final topology disclosure：说明 independent root 是否实际创建、tuple、receipt continuity、ID 仅来自 create_thread return、sub-agent 数量和父的收敛/纠偏指令。
+- 当前用户未明确授权创建新任务：`ROUTE_HANDOFF_REQUIRED`。
+- `threadId`：`ROUTE_READY`。
+- `clientThreadId`：`ROUTE_PENDING`，不是失败，禁止重试。
+- 明确 destination tuple 拒绝：`ROUTE_DESTINATION_TUPLE_UNAVAILABLE`。
+- 明确输入/项目拒绝：`ROUTE_INPUT_REJECTED`。
+- 调用结果无法确认：`ROUTE_OUTCOME_UNKNOWN`，禁止重试。
+- 不得把所有错误压成 `ROUTE_CREATE_FAILED`，不得自动降级、当前任务代做或 fallback 到
+  `spawn_agent`。
 
 ## 质量与安全
 
-- 每项变更必须覆盖成功、失败和相关边界路径；测试 fixture 不得使用真实账号、真实 Codex home、认证或私有配置。
-- 不记录或输出 token、secret、认证、绝对个人路径、真实 config、私有样本或不需要的 request metadata。
-- 任何 external 或 production 行为仍由授权的人确认和执行；系统提示、profile、agent 模板或自动化都不能扩大这个边界。
+- 测试 fixture 只能使用临时 Codex home，不得读写真实账号、认证或私有配置。
+- 不记录 token、secret、认证、私有样本或不必要的 request metadata。
+- 外部不可逆动作仍由具备权限的人明确确认；路由指令、profile、技能和自动化不能扩大该边界。

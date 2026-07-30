@@ -9,8 +9,8 @@
 **Short description:** 为 Codex 启用可移植、fail-closed 的全局路由策略。
 
 **Long description:** Z Codex Router 通过一键 Codex skill 安装版本化全局任务路由策略。它先执行
-dry-run，保留用户配置，校验 profile 与 hash，保持 candidate disabled，并提供 Doctor、upgrade、
-rollback 与 uninstall 控制。
+dry-run，保留用户配置，校验 profile、指令预算与 hash，保持 candidate disabled，并通过 POSIX sh
+与 Windows PowerShell 5.1+ 提供 Doctor、upgrade、recover、rollback 与 uninstall 控制。
 
 ## 起始提示词
 
@@ -21,7 +21,7 @@ rollback 与 uninstall 控制。
 ## 正向测试
 
 1. 新临时 Codex home：enable 成功，创建版本化 payload 与一个 managed block。
-2. 已有 `AGENTS.md`：enable 保留全部用户行，只追加带身份标识的 block。
+2. 已有 `AGENTS.md`：enable 保留全部用户 bytes，并在文件前部写入带身份标识的 managed block。
 3. 已有复杂 `config.toml`（含 `[agents]` table）：记录 bytes，再依次 enable、Doctor、同版本
    re-enable 与 uninstall；每次操作后 bytes 均保持一致。
 4. 同版本 re-enable：返回 no-change，文件内容无 diff。
@@ -30,22 +30,27 @@ rollback 与 uninstall 控制。
 ## 负向测试
 
 1. 修改 managed block：Doctor 与 upgrade 以 `E_MANAGED_BLOCK_DRIFT` 停止。
-2. portable profile 缺失、candidate 被启用，或必需 mode/role 缺失：preflight 以
-   `E_PROFILE_INCOMPATIBLE` fail closed。
-3. 危险 `CODEX_HOME`（path traversal、filesystem root 或真实 user home）：preflight 以
-   `E_PATH_INVALID` 或 `E_CODEX_HOME_DANGEROUS` fail closed。
+2. portable profile 缺失、candidate 被启用，或必需 mode/role/skill 缺失：preflight 以
+   `E_SOURCE_INVALID` fail closed；无效 user override 以 `E_PROFILE_OVERRIDE_INVALID` 停止。
+3. 非空全局 `AGENTS.override.md`：preflight 以 `E_GLOBAL_OVERRIDE_ACTIVE` fail closed。
+4. managed block 超出 `project_doc_max_bytes`：Doctor 以
+   `E_MANAGED_BLOCK_OUTSIDE_INSTRUCTION_BUDGET` fail closed。
+5. 旧 Rust/prebuilt state：fresh install 以 `E_LEGACY_INSTALL_DETECTED` fail closed，必须显式
+   legacy cleanup 后再安装。
 
 ## 发布说明草稿
 
-Z Codex Router 1.0.0 提供 skills-only 本地 router plugin、Rust control plane、可移植 policy core、
-reference 与 disabled-candidate profile、七个参数化 role template、普通 install/enable 不触碰
-`config.toml` 的边界、不可变版本目录、事务 backup/rollback、完整十条全局路由合同、持久
-`create_thread` 请求与 fixture 覆盖。本草稿不表示 Marketplace listing 或 OpenAI review 已发生。
+Z Codex Router 1.0.0 提供 skills-only 本地 router plugin、POSIX sh 与 Windows PowerShell 5.1+
+纯脚本 control plane、可移植 policy core、reference 与 disabled-candidate profile、七个参数化
+role template、普通 install/enable 不触碰 `config.toml` 的边界、不可变版本目录、事务
+backup/rollback、AGENTS 指令预算诊断，以及 `create_thread` ready/pending/failure 分类。本草稿不
+表示 Marketplace listing 或 OpenAI review 已发生。
 
 ## 提交前检查
 
-- [ ] release package 包含匹配平台 binary 与 checksum manifest。
-- [ ] clean checkout 中 source、plugin、skill、fixture、secret 与 path scan 全部通过。
+- [ ] Release 只包含两个 universal source archives 与 `SHA256SUMS`。
+- [ ] clean checkout 中 shell/PowerShell、plugin、skill、fixture、secret/path 与历史编译魔数扫描
+      全部通过。
 - [ ] privacy、terms、support、version、license 与 publisher 信息准确。
 - [ ] 不包含凭证、authentication 声明、个人路径或真实配置。
 - [ ] 由具备资格的人类 publisher（不是 Agent）提交并接受 Marketplace terms。

@@ -3,31 +3,52 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  validate:
-    runs-on: macos-latest
+  posix:
+    name: POSIX sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: actions/setup-python@v5
+          fetch-depth: 0
+      - name: Run POSIX lifecycle, policy, source and release tests
+        shell: sh
+        run: sh scripts/test_all.sh
+      - name: Scan all reachable Git blobs for compiled executables
+        shell: sh
+        run: sh scripts/verify_source.sh --history
+
+  windows-powershell:
+    name: Windows PowerShell 5.1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.11"
-      - run: cargo fmt --check
-      - run: cargo test --all-targets
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: sh -n install.sh
-      - run: python3 scripts/test_bootstrap.py
-      - run: python3 scripts/test_route_receipts.py
-      - run: python3 scripts/verify_policy_parity.py
-      - run: python3 scripts/verify_source.py
-      - name: 拒绝旧 Go source module
-        shell: bash
-        run: |
-          test -z "$(find . -type f \( -name '*.[g]o' -o -name 'g''o.mod' -o -name 'g''o.sum' \) -not -path './.git/*' -print)"
+          fetch-depth: 0
+      - name: Run Windows PowerShell 5.1 lifecycle and release tests
+        shell: powershell
+        run: .\scripts\test_all.ps1
+      - name: Check rewritten history paths
+        shell: powershell
+        run: .\scripts\verify_source.ps1 -History
+
+  powershell-core:
+    name: PowerShell 7
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run PowerShell 7 lifecycle and release tests
+        shell: pwsh
+        run: ./scripts/test_all.ps1

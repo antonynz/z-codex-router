@@ -2,8 +2,17 @@
   "schemaVersion": 1,
   "runtime": {
     "codexHomeRequired": true,
-    "platforms": ["darwin", "linux", "windows"],
-    "architectures": ["amd64", "arm64"],
+    "platforms": [
+      "darwin",
+      "linux",
+      "windows"
+    ],
+    "controlPlanes": {
+      "darwin": "POSIX sh",
+      "linux": "POSIX sh",
+      "windows": "Windows PowerShell 5.1+"
+    },
+    "compiledArtifacts": "forbidden",
     "requiredProfiles": [
       "portable/default.toml",
       "stable/current-gpt-5.6-reference.toml",
@@ -12,23 +21,17 @@
   },
   "installer": {
     "managedBlockProtocol": 1,
-    "configToml": {
-      "ordinaryInstallAndRoutingEnable": "untouched",
-      "safeAutoApproval": "explicit-opt-in-three-keys"
-    },
+    "stateFormat": "script-v1",
+    "managedBlockPlacement": "AGENTS.md byte-prefix after optional UTF-8 BOM",
+    "globalOverride": "non-empty-blocks-install",
+    "configToml": "never-modified",
+    "legacyRustState": "explicit-cleanup-then-fresh-install",
     "profileOverride": {
       "path": "z-codex-router-profile.toml",
       "precedence": "explicit-user-session-cli>validated-user-override>shipped-default",
       "invalid": "fail-closed",
-      "runtimeAllowlist": "create-thread-intersection-fail-closed",
-      "reset": "backup-and-remove",
+      "reset": "backup-hash-and-remove",
       "restore": "managed-backup-only-validate-atomic"
-    },
-    "independentRootAuthorization": {
-      "source": "explicit-install-enable-or-upgrade-managed-block",
-      "scope": "one-per-task-exact-route",
-      "repeatConfirmation": "not-required-when-host-accepts-durable-request",
-      "policyConflict": "route-handoff-required"
     },
     "failureMode": "closed"
   }
