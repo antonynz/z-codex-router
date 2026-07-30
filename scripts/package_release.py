@@ -75,8 +75,12 @@ def main() -> None:
 
     root = Path(__file__).resolve().parents[1]
     plugin = root / "plugins" / "z-codex-router"
-    plugin_manifest = json.loads((plugin / ".codex-plugin" / "plugin.json").read_text())
-    release_manifest = json.loads((plugin / "release" / "manifest.json").read_text())
+    plugin_manifest = json.loads(
+        (plugin / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    release_manifest = json.loads(
+        (plugin / "release" / "manifest.json").read_text(encoding="utf-8")
+    )
     if plugin_manifest["version"] != release_manifest["version"]:
         parser.error("plugin and release manifest versions differ")
     staging = args.out / "plugins" / "z-codex-router"
@@ -103,7 +107,9 @@ def main() -> None:
             "sha256": sha256(target),
         }],
     }
-    (args.out / "checksums.json").write_text(json.dumps(payload, indent=2) + "\n")
+    (args.out / "checksums.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
     if sha256(args.out / payload["assets"][0]["path"]) != payload["assets"][0]["sha256"]:
         raise SystemExit("packaged binary checksum verification failed")
     if args.archive:
