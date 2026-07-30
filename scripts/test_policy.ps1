@@ -25,7 +25,7 @@ foreach ($token in @(
     "ROUTE_INPUT_REJECTED",
     "ROUTE_OUTCOME_UNKNOWN",
     "thinking",
-    "禁止重试"
+    (-join @([char]0x7981, [char]0x6B62, [char]0x91CD, [char]0x8BD5))
 )) {
     Assert-Text $Router $token
 }

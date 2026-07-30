@@ -19,7 +19,11 @@ foreach ($relative in @(
     $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) {
-        throw "PowerShell parse failed: $relative`: $($errors[0].Message)"
+        $firstError = $errors[0]
+        $errorLine = $firstError.Extent.StartLineNumber
+        $errorColumn = $firstError.Extent.StartColumnNumber
+        $errorText = $firstError.Extent.Text.Replace("`r", "\r").Replace("`n", "\n")
+        throw "PowerShell parse failed: $relative`: line=$errorLine column=$errorColumn near=$errorText message=$($firstError.Message)"
     }
 }
 

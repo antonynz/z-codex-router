@@ -22,15 +22,19 @@ function Invoke-Installer {
     $stdout = [IO.Path]::Combine($TestRoot, "$token.out")
     $stderr = [IO.Path]::Combine($TestRoot, "$token.err")
     $saved = @{}
+    $savedErrorActionPreference = $ErrorActionPreference
     foreach ($key in $Environment.Keys) {
         $saved[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
         [Environment]::SetEnvironmentVariable($key, [string]$Environment[$key], "Process")
     }
     try {
+        # Windows PowerShell 5.1 promotes native stderr to an ErrorRecord.
+        $ErrorActionPreference = "Continue"
         & $Engine -NoProfile -ExecutionPolicy Bypass -File $Installer @Arguments 1> $stdout 2> $stderr
         $code = $LASTEXITCODE
     }
     finally {
+        $ErrorActionPreference = $savedErrorActionPreference
         foreach ($key in $Environment.Keys) {
             [Environment]::SetEnvironmentVariable($key, $saved[$key], "Process")
         }

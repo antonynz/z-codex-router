@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-posix:
     name: Release gate (${{ matrix.name }})
     strategy:
       fail-fast: false
@@ -17,32 +17,42 @@ jobs:
         include:
           - name: macOS POSIX sh
             os: macos-latest
-            shell: sh
-            command: sh scripts/test_all.sh
           - name: Linux POSIX sh
             os: ubuntu-latest
-            shell: sh
-            command: sh scripts/test_all.sh
-          - name: Windows PowerShell 5.1
-            os: windows-latest
-            shell: powershell
-            command: .\scripts\test_all.ps1
-          - name: PowerShell 7
-            os: windows-latest
-            shell: pwsh
-            command: ./scripts/test_all.ps1
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Run script-only release gate
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.command }}
+        shell: sh
+        run: sh scripts/test_all.sh
+
+  test-windows-powershell:
+    name: Release gate (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run script-only release gate
+        shell: powershell
+        run: .\scripts\test_all.ps1
+
+  test-powershell-core:
+    name: Release gate (PowerShell 7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run script-only release gate
+        shell: pwsh
+        run: ./scripts/test_all.ps1
 
   package:
     name: Build universal source archives
-    needs: test
+    needs: [test-posix, test-windows-powershell, test-powershell-core]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

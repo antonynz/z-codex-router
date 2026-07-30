@@ -24,8 +24,16 @@ function Invoke-Script {
     $stdout = [IO.Path]::Combine($TestRoot, "$token.out")
     $stderr = [IO.Path]::Combine($TestRoot, "$token.err")
     $all = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Path) + $Arguments
-    & $Engine @all 1> $stdout 2> $stderr
-    $exitCode = $LASTEXITCODE
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Windows PowerShell 5.1 promotes native stderr to an ErrorRecord.
+        & $Engine @all 1> $stdout 2> $stderr
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
     if ($exitCode -ne $ExpectedExit) {
         $errorText = if ([IO.File]::Exists($stderr)) { [IO.File]::ReadAllText($stderr) } else { "" }
         Fail-Test "exit=$exitCode expected=$ExpectedExit command=$Path $($Arguments -join ' ') stderr=$errorText"
@@ -112,7 +120,8 @@ try {
     # BOM, CRLF, UTF-8 and later user edits survive.
     $caseHome = [IO.Path]::Combine($TestRoot, "bytes")
     [void][IO.Directory]::CreateDirectory($caseHome)
-    $user = $Utf8NoBom.GetBytes("用户原文`r`nsecond`r`n")
+    $userText = -join @([char]0x7528, [char]0x6237, [char]0x539F, [char]0x6587)
+    $user = $Utf8NoBom.GetBytes($userText + "`r`nsecond`r`n")
     $original = New-Object byte[] ($user.Length + 3)
     $original[0] = 0xEF; $original[1] = 0xBB; $original[2] = 0xBF
     [Array]::Copy($user, 0, $original, 3, $user.Length)
@@ -121,7 +130,8 @@ try {
     [void](Invoke-Router $caseHome @("install"))
     $result = Invoke-Router $caseHome @("doctor", "--cwd", $caseHome)
     Assert-Contains $result.Output "managed_block_start=3"
-    $later = $Utf8NoBom.GetBytes("安装后追加`r`n")
+    $laterText = -join @([char]0x5B89, [char]0x88C5, [char]0x540E, [char]0x8FFD, [char]0x52A0)
+    $later = $Utf8NoBom.GetBytes($laterText + "`r`n")
     $stream = [IO.File]::Open($agents, [IO.FileMode]::Append)
     try { $stream.Write($later, 0, $later.Length) } finally { $stream.Dispose() }
     [void](Invoke-Router $caseHome @("uninstall"))
@@ -144,7 +154,8 @@ try {
     $caseHome = [IO.Path]::Combine($TestRoot, "budget")
     [void][IO.Directory]::CreateDirectory($caseHome)
     $builder = New-Object Text.StringBuilder
-    for ($index = 0; $index -lt 5000; $index++) { [void]$builder.Append("用户内容-0123456789`n") }
+    $largeLine = (-join @([char]0x7528, [char]0x6237, [char]0x5185, [char]0x5BB9)) + "-0123456789`n"
+    for ($index = 0; $index -lt 5000; $index++) { [void]$builder.Append($largeLine) }
     $large = $Utf8NoBom.GetBytes($builder.ToString())
     [IO.File]::WriteAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md"), $large)
     [void](Invoke-Router $caseHome @("install"))
@@ -250,8 +261,7 @@ try {
     $driftBytes = [IO.File]::ReadAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md"))
     $result = Invoke-Router $caseHome @("recover") 1
     Assert-Contains $result.Error "E_TRANSACTION_DRIFT"
-    Assert-BytesEqual $driftBytes ([IO.File]::ReadAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md"))
-    )
+    Assert-BytesEqual $driftBytes ([IO.File]::ReadAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md")))
     if (Test-Path -LiteralPath ([IO.Path]::Combine($caseHome, ".z-codex-router.lock"))) {
         Fail-Test "failed recover left a stale operation lock"
     }
