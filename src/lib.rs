@@ -2264,6 +2264,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tri_state_profile_validator_accepts_receipt_aware_preflight() {
+        validate_profiles(&source_root()).unwrap();
+    }
+
+    #[test]
+    fn tri_state_profile_validator_rejects_disabled_exact_route_or_platform() {
+        for (needle, replacement) in [
+            (
+                "require_exact_route_match = true",
+                "require_exact_route_match = false",
+            ),
+            (
+                "require_platform_capability = true",
+                "require_platform_capability = false",
+            ),
+        ] {
+            let temp = fixture();
+            let root = temp.path().join("profile-disabled");
+            copy_path(&source_root(), &root).unwrap();
+            let profile = root.join("profiles/portable/default.toml");
+            let contents = fs::read_to_string(&profile).unwrap();
+            assert!(contents.contains(needle));
+            fs::write(profile, contents.replace(needle, replacement)).unwrap();
+            assert_eq!(
+                validate_profiles(&root).unwrap_err().code(),
+                "E_PROFILE_INCOMPATIBLE"
+            );
+        }
+    }
+
+    #[test]
+    fn tri_state_profile_validator_rejects_invalid_receipt_or_observability() {
+        for (needle, replacement) in [
+            ("protocol = 1", "protocol = 2"),
+            (
+                "observable_mismatch = \"mismatch-fail-closed\"",
+                "observable_mismatch = \"continue\"",
+            ),
+            (
+                "states = [\"observable\", \"unobservable\"]",
+                "states = [\"observable\"]",
+            ),
+        ] {
+            let temp = fixture();
+            let root = temp.path().join("profile-invalid");
+            copy_path(&source_root(), &root).unwrap();
+            let profile = root.join("profiles/portable/default.toml");
+            let contents = fs::read_to_string(&profile).unwrap();
+            assert!(contents.contains(needle));
+            fs::write(profile, contents.replace(needle, replacement)).unwrap();
+            assert_eq!(
+                validate_profiles(&root).unwrap_err().code(),
+                "E_PROFILE_INCOMPATIBLE"
+            );
+        }
+    }
+
     fn run(home: &Path, command: Command, source: bool) -> Result<Outcome> {
         let source_fixture = source.then(historical_v1_source_fixture);
         execute(Options {
