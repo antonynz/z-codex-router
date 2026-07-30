@@ -117,6 +117,42 @@ Invoke-WebRequest `
 
 If the user asked only to install, omit `-Enable`.
 
+### Copy-paste upgrade / 一键升级（不要先卸载）
+
+For a healthy existing router installation, rerun the **latest** bootstrap with enablement authority.
+Do not invoke an old packaged launcher, uninstall first, or hand-edit the managed block. The latest
+bootstrap first installs the latest plugin at its path-stable source, then invokes that **new launcher**
+for `upgrade --dry-run`, `upgrade`, and Doctor:
+
+```sh
+work_dir=$(mktemp -d)
+curl --fail --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  -o "$work_dir/install.sh" \
+  https://github.com/antonynz/z-codex-router/releases/latest/download/install.sh
+sh "$work_dir/install.sh" --enable
+```
+
+```powershell
+$workDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid())
+New-Item -ItemType Directory -Path $workDir | Out-Null
+$installer = Join-Path $workDir "install.ps1"
+Invoke-WebRequest `
+  https://github.com/antonynz/z-codex-router/releases/latest/download/install.ps1 `
+  -OutFile $installer
+& $installer -Enable
+```
+
+The new control plane recognizes the healthy 1.0.1 legacy profile/managed-block contract and 1.0.2
+contract using the installed version's own evidence. It atomically replaces only the verified managed
+block/current pointer and preserves user `AGENTS.md`, `config.toml`, Safe Auto state, and
+`z-codex-router-profile.toml` override byte-for-byte. A truly changed managed block, malformed legacy
+profile, unknown transaction state, or hash mismatch remains fail-closed; report the stable error and use
+Recover rather than forcing uninstall.
+
+升级后无需重启应用或 CLI；`routerctl` 和 Doctor 立即读取新状态。已有 task 已加载的 skills/tools 不会被
+回写，请新开 task 才加载更新后的 plugin skills/tools。
+
 ## 4. What the bootstrap guarantees / Bootstrap 保证
 
 The bootstrap:
@@ -135,7 +171,8 @@ The bootstrap:
 8. preserves the previous active source if replacement is needed and restores it if a later step
    fails; the configured source path never changes between upgrades;
 9. runs `codex plugin marketplace add` and `codex plugin add`;
-10. always runs router dry-run; with explicit enablement it then runs install/upgrade and Doctor.
+10. detects an existing active state and always runs the new launcher's router `upgrade --dry-run`; with
+    explicit enablement it then runs the transactional install/upgrade and Doctor.
 
 The extracted marketplace is never placed only in a temporary directory, so Codex is not left
 pointing at a deleted local source. The version snapshot provides audit evidence while the
@@ -168,23 +205,23 @@ directly runnable plugin package.
 Pin an exact version:
 
 ```sh
-sh install.sh --version 1.0.0 --enable
+sh install.sh --version 1.0.3 --enable
 ```
 
 ```powershell
-.\install.ps1 -Version 1.0.0 -Enable
+.\install.ps1 -Version 1.0.3 -Enable
 ```
 
 For a tested HTTPS asset mirror, override the fully resolved asset directory:
 
 ```sh
-sh install.sh --version 1.0.0 \
-  --base-url https://mirror.example/z-codex-router/v1.0.0 --enable
+sh install.sh --version 1.0.3 \
+  --base-url https://mirror.example/z-codex-router/v1.0.3 --enable
 ```
 
 ```powershell
-.\install.ps1 -Version 1.0.0 `
-  -BaseUrl https://mirror.example/z-codex-router/v1.0.0 -Enable
+.\install.ps1 -Version 1.0.3 `
+  -BaseUrl https://mirror.example/z-codex-router/v1.0.3 -Enable
 ```
 
 HTTP and HTTPS-to-HTTP redirects are rejected.
@@ -212,11 +249,15 @@ codex plugin add z-codex-router@z-codex-router
 
 ## 8. Upgrade and rollback / 升级与回滚
 
-- Upgrade: rerun the latest installer with enablement authority. If router state exists, the
-  bootstrap uses `upgrade --dry-run` and then `upgrade`; the binary rejects older versions. An
-  explicit same-version `upgrade` may refresh a changed local policy payload (for example a stable
-  1.0.2 cache iteration) by journaling an atomic version-directory backup; it never changes
-  `config.toml` or the safe-auto three-key state.
+- Upgrade: rerun the latest installer with enablement authority; do **not** uninstall first. If router
+  state exists, the bootstrap uses the new source launcher's `upgrade --dry-run` and then `upgrade`.
+  It recognizes healthy 1.0.1 legacy contracts and 1.0.2 contracts from their exact installed payload
+  evidence, then transactionally replaces one verified managed block/current pointer. An explicit
+  same-version `upgrade` may refresh a changed local policy payload by journaling an atomic
+  version-directory backup, but only when the current block is byte-for-byte intact; it never changes
+  `config.toml`, Safe Auto three-key state, or `z-codex-router-profile.toml` user override. Before any
+  managed write, it validates an existing override; an invalid override returns
+  `E_PROFILE_OVERRIDE_INVALID` and must be repaired or explicitly reset before retry.
 - A failed enablement or upgrade restores its own just-created backup before returning. If an
   interrupted process leaves `E_TRANSACTION_PENDING`, run `recover`: it restores only when the
   journal and current files match its recorded before/after values, and it does not need a second
@@ -232,16 +273,48 @@ codex plugin add z-codex-router@z-codex-router
   (PowerShell). It replaces only the exact managed block and current pointer; the audited version
   snapshot is printed as `ZCR_VERSION_SOURCE` or `versionSource`.
 
-升级时重新运行 latest installer；已有 state 会自动走安全 upgrade。旧版本仍会被拒绝；只有显式
-`upgrade` 才允许对发生变化的同版本本地 policy payload 做带 journal 的原子目录刷新，且不改
-`config.toml` 或 safe-auto 三键状态。启用或升级失败会在返回前恢复
+升级时重新运行 latest installer，**不要先卸载**；已有 state 会由新 launcher 自动走安全 upgrade。健康的
+1.0.1 legacy contract 与 1.0.2 contract 会根据精确 installed payload evidence 验证，再替换一段
+受管 block/current pointer；真正 drift 仍停止。只有显式 `upgrade` 才允许对发生变化的同版本本地 policy
+payload 做带 journal 的原子目录刷新，而且必须先确认 managed block 完整；不改 `config.toml`、safe-auto
+三键状态或 `z-codex-router-profile.toml` user override。启用或升级失败会在返回前恢复
 本次刚创建的备份；如进程中断留下 `E_TRANSACTION_PENDING` 或 `E_SAFE_AUTO_TRANSACTION_PENDING`，
 运行 `recover`，仅在 journal 与当前文件/config 匹配记录的前后值时恢复原事务，无需二次授权；safe-auto
 事务随后运行 `safe-auto doctor` 验收，再单独运行通用 Doctor 检查路由；若路由未启用而 safe-auto active，
 `E_SAFE_AUTO_ACTIVE` 是独立 opt-in 边界而非恢复失败。未知 hash 或用户编辑保持不动并 fail closed。
+现有 override 会在任何受管写入前被验证；无效 override 返回 `E_PROFILE_OVERRIDE_INVALID`，必须先修复或
+显式 `profile reset` 后再重试，绝不会静默回退到默认 mapping。
 已完成动作的回滚永不自动发生，必须由用户明确要求，
 并使用安装器输出的持久 active source 中 launcher 执行 `rollback`；它只替换精确受管 block 和
 current pointer。
+
+## 8.1 Profile override and desktop handoff / 映射覆盖与桌面交接
+
+`routerctl profile show` and Doctor report the active mapping source (`default` or `user override`),
+path, and mapping hash. `profile init` creates a full editable override outside version payloads;
+`profile validate` is read-only; `profile set <tier> <model> <effort>` is explicit; `profile reset`
+atomically writes a managed TOML backup plus SHA-256 metadata and removes the override; and
+`profile restore <backup>` restores only the returned managed backup after validating its path, hash, and
+complete mapping. Never ask the user to overwrite the file manually. Invalid TOML, duplicate keys, missing/unknown tiers, empty fields,
+unsupported effort, and invalid A0 semantics return `E_PROFILE_OVERRIDE_INVALID` without a silent
+default fallback. Install and upgrade preflight an existing override before any managed write, so an
+invalid one stops with `E_PROFILE_OVERRIDE_INVALID` and must be repaired or explicitly reset before retry.
+Future model names are syntactically allowed, but a later `create_thread` must still
+intersect its actual runtime allowlist and fail closed.
+
+Parent first classifies and freezes the scope/model/effort/receipt, then checks desktop/tool policy;
+the follow-up never reclassifies. Desktop/tool policy can forbid `create_thread` until the user directly
+asks for a new task. Do not use `spawn_agent` or the current root as a substitute. Return
+`ROUTE_HANDOFF_REQUIRED` with the localized direct command (fill the frozen tuple):
+
+```text
+请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。
+
+Create a new independent Codex task for the same current scope using <model> / <effort>, carrying forward the current route receipt; do not create a sub-agent or a second task.
+```
+
+On that follow-up, the parent may make the same single receipt-backed `create_thread` call. A rejected or
+failed call is `ROUTE_CREATE_UNAVAILABLE` or `ROUTE_CREATE_FAILED`, not permission to create a second root.
 
 ## 9. Disable and uninstall / 停用与卸载
 

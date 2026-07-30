@@ -45,6 +45,15 @@ EXPECTED_ROUTING = {
     "C2": ("gpt-5.6-terra", "max"),
     "C3": ("gpt-5.6-sol", "max"),
 }
+CURRENT_VERSION = "1.0.3"
+PROFILE_OVERRIDE = {
+    "path": "z-codex-router-profile.toml",
+    "precedence": "explicit-user-session-cli>validated-user-override>shipped-default",
+    "invalid": "fail-closed",
+    "runtimeAllowlist": "create-thread-intersection-fail-closed",
+    "reset": "backup-and-remove",
+    "restore": "managed-backup-only-validate-atomic",
+}
 
 
 def fail(message: str) -> None:
@@ -81,10 +90,13 @@ def read_json(path: Path) -> dict:
 
 def verify_contract(plugin: Path) -> None:
     manifest = read_json(plugin / "release/manifest.json")
+    plugin_manifest = read_json(plugin / ".codex-plugin/plugin.json")
     if manifest.get("schemaVersion") != 1 or manifest.get("channel") != "stable":
         fail("release manifest is not a stable schema-1 manifest")
-    if manifest.get("version") != "1.0.2":
+    if manifest.get("version") != CURRENT_VERSION:
         fail(f"unexpected active version: {manifest.get('version')!r}")
+    if plugin_manifest.get("version") != manifest.get("version"):
+        fail("plugin and release manifests disagree about the source version")
     actual_hash = payload_hash(plugin)
     if manifest.get("payloadSha256") != actual_hash:
         fail("release manifest payload hash does not match the package contents")
@@ -95,6 +107,8 @@ def verify_contract(plugin: Path) -> None:
         "safeAutoApproval": "explicit-opt-in-three-keys",
     }:
         fail("compatibility metadata does not describe the explicit safe-auto config boundary")
+    if compatibility.get("installer", {}).get("profileOverride") != PROFILE_OVERRIDE:
+        fail("compatibility metadata does not describe the persistent profile override boundary")
 
     required = [
         "core/router.md",
@@ -128,6 +142,18 @@ def verify_contract(plugin: Path) -> None:
         for key in ("on_missing_profile", "on_incompatible_profile", "on_disabled_candidate")
     ):
         fail("portable profile does not fail closed for invalid policy inputs")
+    if portable.get("profile_override") != {
+        "user_path": "z-codex-router-profile.toml",
+        "precedence": [
+            "explicit-user-session-cli",
+            "validated-user-override",
+            "shipped-default",
+        ],
+        "invalid": "fail-closed",
+        "runtime_allowlist": "create-thread-intersection-fail-closed",
+        "restore": "managed-backup-only-validate-atomic",
+    }:
+        fail("portable profile does not declare the persistent override boundary")
     receipt = portable.get("receipt", {})
     expected_receipt = {
         "protocol": 1,
@@ -199,6 +225,17 @@ def verify_contract(plugin: Path) -> None:
         "E_SAFE_AUTO_TRANSACTION_PENDING",
         "safe-auto doctor",
         "E_SAFE_AUTO_ACTIVE",
+        "Persistent user profile override",
+        "z-codex-router-profile.toml",
+        "ROUTE_PROFILE_RUNTIME_UNAVAILABLE",
+        "ROUTE_HANDOFF_REQUIRED",
+        "ROUTE_CREATE_FAILED",
+        "ROUTE_CREATE_UNAVAILABLE",
+        "spawn_agent` fallback",
+        "final topology disclosure",
+        "请为当前相同任务范围创建一个新的 Codex 独立任务",
+        "Create a new independent Codex task for the same current scope",
+        "profile restore <reset 返回的 backup 路径>",
     )
     missing_anchors = [anchor for anchor in anchors if anchor not in router]
     if missing_anchors:
@@ -286,7 +323,37 @@ def run_routerctl_fixture(plugin: Path, binary: Path) -> None:
             fail("safe-auto restore did not preserve unrelated config")
         if run("safe-auto", "doctor").get("code") != "OK_ABSENT":
             fail("safe-auto doctor did not report absent")
-        run("doctor")
+        doctor = run("doctor")
+        if doctor.get("profile", {}).get("source") != "default":
+            fail("Doctor did not report the shipped default profile source")
+        initialized = run("profile", "init")
+        if initialized.get("profile", {}).get("source") != "user override":
+            fail("profile init did not activate a user override")
+        override = home / "z-codex-router-profile.toml"
+        run("profile", "set", "C2", "gpt-6.0-future", "max")
+        shown = run("profile", "show")
+        if shown.get("profile", {}).get("routing", {}).get("C2", {}).get("model") != "gpt-6.0-future":
+            fail("profile set/show did not preserve a future model token")
+        override_before_reset = override.read_bytes()
+        reset_valid = run("profile", "reset")
+        backup = reset_valid.get("backup")
+        if not backup or override.exists():
+            fail("profile reset did not retain a backup and restore the default")
+        restored = run("profile", "restore", backup)
+        if restored.get("profile", {}).get("source") != "user override" or override.read_bytes() != override_before_reset:
+            fail("profile restore did not atomically restore the validated backup")
+        override.write_text("schema_version = 1\n[routing]\n")
+        invalid = subprocess.run(
+            [str(binary), "--source", str(plugin), "--codex-home", str(home), "doctor"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if invalid.returncode == 0 or "E_PROFILE_OVERRIDE_INVALID" not in invalid.stderr:
+            fail("Doctor did not fail closed on an invalid user override")
+        reset = run("profile", "reset")
+        if not reset.get("backup") or override.exists():
+            fail("profile reset did not retain a backup and restore the default")
         run("uninstall")
         run("doctor")
 
@@ -422,11 +489,11 @@ def main() -> None:
     verify_contract(plugin)
     with tempfile.TemporaryDirectory(prefix="zcr-policy-chain-") as temporary:
         home = Path(temporary) / "codex-home"
-        version_root = home / "z-codex-router/versions/1.0.2"
+        version_root = home / "z-codex-router/versions" / CURRENT_VERSION
         version_root.parent.mkdir(parents=True)
         shutil.copytree(plugin, version_root)
         state = {
-            "version": "1.0.2",
+            "version": CURRENT_VERSION,
             "payload_sha256": payload_hash(version_root),
             "installed_at_unix_ns": 0,
             "agents_existed_before": False,

@@ -24,6 +24,8 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: sh -n install.sh
       - run: python3 scripts/test_bootstrap.py
+      - run: python3 scripts/test_route_receipts.py
+      - run: python3 scripts/verify_policy_parity.py
       - run: python3 scripts/verify_source.py
       - name: Reject legacy source modules
         shell: bash

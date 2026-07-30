@@ -65,7 +65,29 @@ CONTRACT_MARKERS = (
     "E_SAFE_AUTO_TRANSACTION_PENDING",
     "safe-auto doctor",
     "E_SAFE_AUTO_ACTIVE",
+    "Persistent user profile override",
+    "z-codex-router-profile.toml",
+    "ROUTE_PROFILE_RUNTIME_UNAVAILABLE",
+    "ROUTE_HANDOFF_REQUIRED",
+    "ROUTE_CREATE_FAILED",
+    "ROUTE_CREATE_UNAVAILABLE",
+    "严禁 `spawn_agent` fallback",
+    "final topology disclosure",
+    "请为当前相同任务范围创建一个新的 Codex 独立任务",
+    "Create a new independent Codex task for the same current scope",
+    "profile restore <reset 返回的 backup 路径>",
 )
+PROFILE_OVERRIDE = {
+    "user_path": "z-codex-router-profile.toml",
+    "precedence": [
+        "explicit-user-session-cli",
+        "validated-user-override",
+        "shipped-default",
+    ],
+    "invalid": "fail-closed",
+    "runtime_allowlist": "create-thread-intersection-fail-closed",
+    "restore": "managed-backup-only-validate-atomic",
+}
 
 
 def fail(message: str) -> None:
@@ -160,6 +182,8 @@ def main() -> None:
         fail("portable observability policy differs")
     if portable["selection"]["allow_candidate_as_default"] or portable["selection"]["silent_fallback"]:
         fail("portable selection permits candidate fallback")
+    if portable.get("profile_override") != PROFILE_OVERRIDE:
+        fail("portable profile override contract differs")
 
     for name in MODES:
         if not (PLUGIN / "core" / "modes" / name).is_file():

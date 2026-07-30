@@ -27,6 +27,7 @@ ARCHIVES = {
 }
 SUPPORT = {"install.sh", "install.ps1", "AGENT_INSTALL.md"}
 EXPECTED = ARCHIVES | SUPPORT | {"SHA256SUMS"}
+CURRENT_VERSION = "1.0.3"
 
 
 def sha256(path: Path) -> str:
@@ -96,8 +97,11 @@ def verify_archive(path: Path, platform: str, arch: str, suffix: str) -> None:
             raise SystemExit(f"{path.name} manifests are not regular files")
         manifest = json.load(manifest_file)
         plugin = json.load(plugin_file)
-        if manifest.get("version") != "1.0.2" or plugin.get("version") != "1.0.2":
-            raise SystemExit(f"{path.name} is not version 1.0.2")
+        if (
+            manifest.get("version") != CURRENT_VERSION
+            or plugin.get("version") != CURRENT_VERSION
+        ):
+            raise SystemExit(f"{path.name} is not version {CURRENT_VERSION}")
     # Run the same end-to-end payload-chain verifier used by source preflight so
     # release assets cannot pass on layout checks while carrying an inactive or
     # hash-inconsistent router payload.

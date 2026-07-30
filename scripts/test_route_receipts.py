@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Executable acceptance model for the parent-owned route receipt contract.
+"""Executable acceptance model for parent-owned routing handoffs.
 
-The router is a prompt policy, so this focused test keeps the decision table
-deterministic without inventing a second runtime.  It is intentionally small:
-the installed payload remains the source of truth and the policy verifier
-checks that its anchors match this table.
+The router is a prompt policy.  This small deterministic model makes the
+desktop-policy boundary testable without pretending that a prompt can override
+the actual create_thread tool policy.
 """
 from __future__ import annotations
 
@@ -42,6 +41,34 @@ class Decision:
     note: str
 
 
+@dataclass(frozen=True)
+class CreatePolicy:
+    state: str  # permitted | requires_explicit_user_task | unavailable
+
+
+@dataclass(frozen=True)
+class Handoff:
+    decision: Decision
+    creator_invoked: bool
+    thread_id: str | None = None
+
+
+def exact_user_prompt(receipt: Receipt) -> str:
+    return (
+        "Create a new independent Codex task for the same current scope using "
+        f"{receipt.requested_model} / {receipt.requested_effort}, carrying forward the current "
+        "route receipt; do not create a sub-agent or a second task."
+    )
+
+
+def exact_user_prompt_zh(receipt: Receipt) -> str:
+    return (
+        "请为当前相同任务范围创建一个新的 Codex 独立任务，使用 "
+        f"{receipt.requested_model} / {receipt.requested_effort}，沿用当前 route receipt；"
+        "不要创建子代理或第二个任务。"
+    )
+
+
 def validate_receipt(
     receipt: Receipt,
     *,
@@ -61,6 +88,47 @@ def validate_receipt(
     return returned_thread_id
 
 
+def parent_handoff(
+    receipt: Receipt,
+    policy: CreatePolicy,
+    *,
+    create_succeeds: bool = True,
+    returned_thread_id: str | None = "thread-from-tool",
+    existing_root_created: bool = False,
+) -> Handoff:
+    """Attempt only policy-permitted create_thread; never spawn_agent/current-root fallback."""
+    if existing_root_created:
+        return Handoff(
+            Decision("ROUTE_HANDOFF_ALREADY_CREATED", False, "one independent root already exists"),
+            False,
+        )
+    if policy.state == "requires_explicit_user_task":
+        return Handoff(
+            Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt(receipt)),
+            False,
+        )
+    if policy.state == "unavailable":
+        return Handoff(
+            Decision("ROUTE_CREATE_UNAVAILABLE", False, "tool policy does not expose create_thread"),
+            False,
+        )
+    if policy.state != "permitted":
+        raise AssertionError(f"unknown policy state: {policy.state}")
+    if not create_succeeds or returned_thread_id is None:
+        return Handoff(
+            Decision("ROUTE_CREATE_FAILED", False, "create_thread failed; stop and report route exception"),
+            True,
+        )
+    thread_id = validate_receipt(
+        receipt,
+        creator_invoked=True,
+        tool_accepted=True,
+        returned_thread_id=returned_thread_id,
+        current_scope=receipt.task_scope,
+    )
+    return Handoff(Decision("ROUTE_HANDOFF_CREATED", True, "receipt-backed independent root"), True, thread_id)
+
+
 def verify_runtime(receipt: Receipt, runtime: Runtime, *, tier: str, exception: bool = False) -> Decision:
     observable = runtime.model is not None and runtime.effort is not None
     if observable and (runtime.model != receipt.requested_model or runtime.effort != receipt.requested_effort):
@@ -72,6 +140,18 @@ def verify_runtime(receipt: Receipt, runtime: Runtime, *, tier: str, exception: 
     if tier == "C3":
         return Decision("unobservable", True, "one-time scoped route exception")
     return Decision("unobservable", True, "requested/accepted; actual not verified")
+
+
+def intersect_runtime_allowlist(receipt: Receipt, allowed: set[tuple[str, str]]) -> Decision:
+    """Overrides are syntactic input only; the real create_thread allowlist still wins."""
+    route = (receipt.requested_model, receipt.requested_effort)
+    if route not in allowed:
+        return Decision(
+            "ROUTE_PROFILE_RUNTIME_UNAVAILABLE",
+            False,
+            "requested override tuple is not accepted by the current create_thread policy",
+        )
+    return Decision("ROUTE_PROFILE_RUNTIME_ALLOWED", True, "tuple remains eligible for create_thread")
 
 
 def child_action(receipt: Receipt, *, reclassify: bool = False, create: bool = False) -> None:
@@ -86,29 +166,63 @@ def child_action(receipt: Receipt, *, reclassify: bool = False, create: bool = F
     )
 
 
+def final_topology(receipt: Receipt, thread_id: str) -> dict[str, object]:
+    return {
+        "topology": "one-independent-root",
+        "requested_model": receipt.requested_model,
+        "requested_effort": receipt.requested_effort,
+        "thread_id_source": "create_thread-return-only",
+        "thread_id": thread_id,
+        "subagents": 0,
+        "receipt_continuity": True,
+        "parent_convergence_or_correction": False,
+    }
+
+
 def main() -> None:
     receipt = Receipt(task_scope="bounded implementation")
-    thread_id = validate_receipt(
-        receipt,
-        creator_invoked=True,
-        tool_accepted=True,
-        returned_thread_id="thread-1",
-        current_scope="bounded implementation",
-    )
-    assert thread_id == "thread-1"  # thread IDs come only from create_thread.
 
-    assert verify_runtime(
-        receipt, Runtime("gpt-5.6-luna", "xhigh"), tier="B0"
-    ) == Decision("verified", True, "actual tuple exact")
+    # Allowed creation produces the only receipt-backed root.
+    allowed = parent_handoff(receipt, CreatePolicy("permitted"), returned_thread_id="thread-1")
+    assert allowed.decision.state == "ROUTE_HANDOFF_CREATED"
+    assert allowed.creator_invoked and allowed.thread_id == "thread-1"
+
+    # Desktop policy wins: no attempted tool call, no sub-agent/current-root fallback, and one
+    # exact user action gives the parent a lawful retry boundary.
+    rejected = parent_handoff(receipt, CreatePolicy("requires_explicit_user_task"))
+    assert rejected == Handoff(
+        Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt(receipt)), False
+    )
+    assert "spawn_agent" not in rejected.decision.note
+    assert exact_user_prompt_zh(receipt) == (
+        "请为当前相同任务范围创建一个新的 Codex 独立任务，使用 gpt-5.6-luna / xhigh，"
+        "沿用当前 route receipt；不要创建子代理或第二个任务。"
+    )
+    follow_up = parent_handoff(receipt, CreatePolicy("permitted"), returned_thread_id="thread-follow-up")
+    assert follow_up.decision.allowed and follow_up.creator_invoked
+    assert follow_up.thread_id == "thread-follow-up"  # same receipt/scope/tuple continuity
+
+    failed = parent_handoff(receipt, CreatePolicy("permitted"), create_succeeds=False)
+    assert failed.decision.state == "ROUTE_CREATE_FAILED" and failed.creator_invoked
+    assert parent_handoff(receipt, CreatePolicy("permitted"), existing_root_created=True).decision.state == (
+        "ROUTE_HANDOFF_ALREADY_CREATED"
+    )
+    assert parent_handoff(receipt, CreatePolicy("unavailable")).decision.state == "ROUTE_CREATE_UNAVAILABLE"
+
+    assert verify_runtime(receipt, Runtime("gpt-5.6-luna", "xhigh"), tier="B0") == Decision(
+        "verified", True, "actual tuple exact"
+    )
     assert verify_runtime(receipt, Runtime(), tier="B0") == Decision(
         "unobservable", True, "requested/accepted; actual not verified"
     )
     assert verify_runtime(receipt, Runtime("gpt-5.6-terra", "xhigh"), tier="B0").allowed is False
     assert verify_runtime(receipt, Runtime(), tier="C3").allowed is False
     assert verify_runtime(receipt, Runtime(), tier="C3", exception=True).allowed is True
-    assert verify_runtime(
-        receipt, Runtime("gpt-5.6-terra", "max"), tier="C3", exception=True
-    ).allowed is False
+    assert verify_runtime(receipt, Runtime("gpt-5.6-terra", "max"), tier="C3", exception=True).allowed is False
+    assert intersect_runtime_allowlist(receipt, {("gpt-5.6-luna", "xhigh")}).allowed is True
+    assert intersect_runtime_allowlist(receipt, {("gpt-5.6-terra", "xhigh")}).state == (
+        "ROUTE_PROFILE_RUNTIME_UNAVAILABLE"
+    )
 
     for forged in (
         replace(receipt, origin="user_text"),
@@ -153,15 +267,15 @@ def main() -> None:
     else:
         raise AssertionError("child created a second root")
 
-    # C1 -> implementation is a parent-only phase update on the same thread.
     phase = replace(receipt, target_tier="B0", task_scope="bounded implementation")
     assert phase.automatic_root_creations == 1
     child_action(phase)
-
-    # A root with no receipt still enters the normal initial classification path;
-    # it is not granted a child receipt merely because user text resembles one.
-    initial_classification = "normal-initial-classification"
-    assert initial_classification == "normal-initial-classification"
+    topology = final_topology(receipt, allowed.thread_id or "")
+    assert (
+        topology["subagents"] == 0
+        and topology["receipt_continuity"] is True
+        and topology["parent_convergence_or_correction"] is False
+    )
     print("Route receipt acceptance: OK")
 
 

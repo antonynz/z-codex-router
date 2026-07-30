@@ -1,3 +1,58 @@
+# Z Codex Router v1.0.3
+
+## 中文
+
+这是一个迁移和策略边界补丁；公开的 v1.0.2 未被重写。
+
+- 最新 bootstrap 能直接升级健康的 1.0.1 和 1.0.2，不要求先卸载。它使用被升级版本自身的
+  legacy/current 契约和 payload evidence 验证，再事务性替换唯一精确的 managed block/current pointer。
+  真正的 managed drift、损坏 legacy profile、hash 不匹配或中断事务仍保持 fail-closed，并保留旧版本和
+  Recover 路径。
+- 新增 `<codex_home>/z-codex-router-profile.toml` 持久 mapping override，以及
+  `routerctl profile show|init|validate|set|reset`。默认 mapping 仍随安装提供；显式 user/session/CLI
+  选择优先于有效 override，override 优先于 shipped default。Doctor 输出 active source、path 与 mapping hash；
+  无效 TOML/mapping 不会静默回退。
+- `profile reset` 现在输出带 SHA-256 metadata 的受管 backup；只能通过
+  `routerctl profile restore <backup>` 恢复。restore 限制在受管目录、验证 hash 与完整 mapping、拒绝 drift，
+  并原子恢复，绝不要求用户手工覆盖文件。
+- Desktop/tool policy 优先于路由：无法创建独立根时返回 `ROUTE_HANDOFF_REQUIRED` 并给出唯一明确的用户动作；
+  已允许调用失败或工具不可用分别返回 `ROUTE_CREATE_FAILED`/`ROUTE_CREATE_UNAVAILABLE`。绝不以
+  `spawn_agent` 或当前根替代 `create_thread`。父先冻结 tuple/receipt 再检查 policy；follow-up 现在是可直接
+  发送的“创建新独立任务”命令，不是可能无法被 desktop 识别的元请求。
+- 安装或升级后无需重启；新的 plugin skills/tools 在新开 task 时加载。Safe Auto 三键、用户 AGENTS 内容和
+  profile override 不会被 upgrade/recover/uninstall 改写或删除（profile reset 除外，且先备份）。
+- 本次本机发布准备只构建并验证了 darwin-arm64；darwin-amd64、linux-arm64、linux-amd64、windows-arm64
+  和 windows-amd64 均未在本机构建、归档或发布。发布前必须由现有原生 GitHub-hosted CI 从源码构建并验证。
+
+## English
+
+This is a migration and policy-boundary patch; public v1.0.2 remains unchanged.
+
+- The latest bootstrap upgrades healthy 1.0.1 and 1.0.2 installations without uninstall-first. It
+  validates the installed version using its own legacy/current contract and payload evidence, then
+  transactionally replaces only the exact managed block/current pointer. Real drift, malformed legacy
+  profiles, hash mismatches, and interrupted transactions remain fail-closed with the old version and
+  Recover path intact.
+- Added `<codex_home>/z-codex-router-profile.toml` plus
+  `routerctl profile show|init|validate|set|reset`. Shipped defaults remain available; explicit
+  user/session/CLI selection wins over a valid override, which wins over the shipped default. Doctor
+  reports the active source, path, and mapping hash, and invalid TOML/mappings never silently fall back.
+- `profile reset` now returns a managed SHA-256-attested backup, and only
+  `routerctl profile restore <backup>` can restore it. Restore is confined to the managed directory,
+  validates hash and the complete mapping, rejects drift, and writes atomically without asking users to
+  overwrite files manually.
+- Desktop/tool policy wins over routing: a blocked independent root returns `ROUTE_HANDOFF_REQUIRED`
+  with one exact user action; allowed-call failure and unavailable tools return
+  `ROUTE_CREATE_FAILED`/`ROUTE_CREATE_UNAVAILABLE`. `spawn_agent` and the current root are never a
+  substitute for `create_thread`. The parent freezes the tuple/receipt before policy inspection, and the
+  follow-up is now a direct independent-task command rather than a desktop-unrecognized meta-request.
+- No restart is needed after install or upgrade; open a new task to pick up updated plugin skills/tools.
+  Safe Auto's three keys, user AGENTS content, and the profile override are not rewritten or deleted by
+  upgrade/recover/uninstall (except explicit, backed-up `profile reset`).
+- This local release preparation built and verified only darwin-arm64. darwin-amd64, linux-arm64,
+  linux-amd64, windows-arm64, and windows-amd64 were not built, archived, or published locally; the
+  existing native GitHub-hosted CI must build and verify them from source before release.
+
 # Z Codex Router v1.0.2
 
 ## 中文

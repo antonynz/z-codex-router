@@ -6,7 +6,7 @@
 
 **为每个 Codex 任务精确选择正确模型：可审计、可升级、验证失败即停止。**
 
-Version / 版本：`1.0.2`
+Version / 版本：`1.0.3`
 
 ## 中文
 
@@ -49,6 +49,27 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 > `safe-auto restore`（drift 或事务冲突时停止）；不要因普通安装或路由启用而隐式开启，也不要
 > 扩大 sandbox 或替代高风险/不可逆动作的人类授权。不要要求我安装 CLI 或手工执行命令，由
 > Agent 在隔离检查后完成并回报结果。
+
+#### 升级（不要先卸载）
+
+> 请从 Z Codex Router 的 latest public GitHub Release 升级并启用现有安装。不要先卸载、不要手工编辑
+> `AGENTS.md`、不要删除旧版本或 Safe Auto；使用 latest bootstrap 安装新插件后，让**新 launcher**执行
+> `upgrade --dry-run`、`upgrade` 和 Doctor。它必须识别健康的 1.0.1/1.0.2 受管 payload 与旧 managed block，
+> 原子替换为新版本，同时逐字保留我的 user `AGENTS.md` 内容、`config.toml`、Safe Auto 三键状态和
+> `z-codex-router-profile.toml` user override。若发现真正的受管内容 drift、损坏 profile 或中断事务，停止并
+> 报告稳定错误码和 Recover 路径；无效 override 也必须以 `E_PROFILE_OVERRIDE_INVALID` 停止，先修复或显式
+> `profile reset` 后再试。不得以 uninstall-first、`spawn_agent` 或手工覆盖绕过。
+
+升级写入完成后无需重启应用或 CLI；已运行的 `routerctl`/Doctor 可立即验证新状态。已有任务仍保留其已加载的
+指令和工具集；要让 Codex 载入更新后的插件 skills/tools，请新开一个任务。
+
+#### 映射与 desktop handoff 排障
+
+> 显示并验证我的有效 Z Codex Router tier mapping；除非我明确要求，不要写 override。若我要求修改，使用
+> `profile init`、`profile set`、可恢复的 `profile reset` 或 `profile restore <backup>`，并报告 source、path 和
+> mapping hash。`profile reset` 返回的 backup 只能用 `profile restore` 恢复，不能手工覆盖文件。若 desktop policy
+> 阻止创建独立根任务，停止并返回 `ROUTE_HANDOFF_REQUIRED`；不要 fallback 到 `spawn_agent`。我随后会直接请求：
+> `请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。`
 
 #### 恢复或回滚
 
@@ -157,6 +178,31 @@ packages for other platforms.
 > ordinary installation/routing enablement, expand the sandbox, or replace human authorization for
 > high-risk or irreversible actions. Do not ask me to install a CLI or run commands manually; perform
 > the isolated checks and report the result.
+
+#### Upgrade (do not uninstall first)
+
+> Upgrade and enable my existing Z Codex Router from the latest public GitHub Release. Do not uninstall
+> first, hand-edit `AGENTS.md`, delete the old version, or change Safe Auto. After the latest bootstrap
+> installs the new plugin, use the **new launcher** for `upgrade --dry-run`, `upgrade`, and Doctor. It
+> must recognize healthy 1.0.1/1.0.2 managed payloads and legacy blocks, atomically replace them with the
+> new version, and preserve my user `AGENTS.md` content, `config.toml`, Safe Auto three-key state, and
+> `z-codex-router-profile.toml` override byte-for-byte. On genuine managed drift, malformed legacy profile,
+> an invalid override, or an interrupted transaction, stop with the stable error and Recover path (repair or
+> explicitly `profile reset` an invalid override before retry); never use uninstall-first,
+> `spawn_agent`, or a manual overwrite to bypass it.
+
+No application or CLI restart is needed after the upgrade writes complete; `routerctl` and Doctor can
+verify the new state immediately. Existing tasks retain instructions/tools already loaded into their
+context. Start a new task to pick up updated plugin skills and tools.
+
+#### Mapping and desktop-handoff troubleshooting
+
+> Show and validate my effective Z Codex Router tier mapping; do not write an override unless I explicitly
+> ask. If I request a change, use `profile init`, `profile set`, recoverable `profile reset`, or
+> `profile restore <backup>`, and report source, path, and mapping hash. A reset backup must be restored with
+> `profile restore`, never by manually overwriting the file. If desktop policy blocks the independent-root
+> creation, stop with `ROUTE_HANDOFF_REQUIRED`; never fall back to `spawn_agent`. I will then directly request:
+> `Create a new independent Codex task for the same current scope using <model> / <effort>, carrying forward the current route receipt; do not create a sub-agent or a second task.`
 
 #### Recover or roll back
 

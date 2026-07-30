@@ -15,6 +15,9 @@ use walkdir::WalkDir;
 
 const ROUTER_ID: &str = "z-codex-router";
 const PROTOCOL: u8 = 1;
+const TIER_NAMES: [&str; 8] = ["A0", "A1", "B0", "B1", "B2", "C1", "C2", "C3"];
+const USER_PROFILE_FILE: &str = "z-codex-router-profile.toml";
+const USER_PROFILE_BACKUP_DIRECTORY: &str = "z-codex-router-profile-backups";
 
 #[derive(Debug, Error)]
 pub enum RouterError {
@@ -60,10 +63,24 @@ pub enum Command {
     DryRun,
     Install,
     Doctor,
-    Upgrade { dry_run: bool },
+    Upgrade {
+        dry_run: bool,
+    },
     Recover,
     Rollback,
     Uninstall,
+    ProfileShow,
+    ProfileInit,
+    ProfileValidate,
+    ProfileReset,
+    ProfileRestore {
+        backup: PathBuf,
+    },
+    ProfileSet {
+        tier: String,
+        model: String,
+        effort: String,
+    },
     SafeAutoEnable,
     SafeAutoRestore,
     SafeAutoStatus,
@@ -86,6 +103,22 @@ pub struct Outcome {
     pub changed: bool,
     pub backup: Option<String>,
     pub details: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Route {
+    pub model: String,
+    pub effort: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProfileReport {
+    pub source: String,
+    pub path: String,
+    pub mapping_sha256: String,
+    pub routing: BTreeMap<String, Route>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +128,11 @@ struct ReleaseManifest {
     version: String,
     channel: String,
     payload_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginManifest {
+    version: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +150,12 @@ struct State {
 struct Backup {
     agents: Option<String>,
     current: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ProfileBackup {
+    protocol: u8,
+    override_sha256: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -166,6 +210,14 @@ struct SourceRelease {
     manifest: ReleaseManifest,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstalledContract {
+    LegacyV1_0_0,
+    LegacyV1_0_1,
+    V1_0_2,
+    Current,
+}
+
 pub fn execute(options: Options) -> Result<Outcome> {
     let home = resolve_home(options.codex_home)?;
     match options.command {
@@ -173,6 +225,16 @@ pub fn execute(options: Options) -> Result<Outcome> {
         Command::Recover => recover(&home),
         Command::Rollback => rollback(&home),
         Command::Uninstall => uninstall(&home),
+        Command::ProfileShow => profile_show(&home),
+        Command::ProfileInit => profile_init(&home),
+        Command::ProfileValidate => profile_validate(&home),
+        Command::ProfileReset => profile_reset(&home),
+        Command::ProfileRestore { backup } => profile_restore(&home, &backup),
+        Command::ProfileSet {
+            tier,
+            model,
+            effort,
+        } => profile_set(&home, &tier, &model, &effort),
         Command::DryRun => install(&home, load_source(options.source)?, true, false),
         Command::Install => install(&home, load_source(options.source)?, false, false),
         Command::Upgrade { dry_run } => install(&home, load_source(options.source)?, dry_run, true),
@@ -266,7 +328,8 @@ fn load_source(source: Option<PathBuf>) -> Result<SourceRelease> {
             "release manifest must be schema 1, stable, and semantic-versioned",
         ));
     }
-    validate_payload(&root)?;
+    validate_source_plugin_identity(&root, &manifest)?;
+    validate_current_payload(&root)?;
     let actual = payload_hash(&root)?;
     if actual != manifest.payload_sha256 {
         return Err(RouterError::coded(
@@ -277,16 +340,99 @@ fn load_source(source: Option<PathBuf>) -> Result<SourceRelease> {
     Ok(SourceRelease { root, manifest })
 }
 
-fn validate_payload(root: &Path) -> Result<()> {
+fn validate_source_plugin_identity(root: &Path, release: &ReleaseManifest) -> Result<()> {
+    let plugin: PluginManifest = serde_json::from_slice(
+        &fs::read(root.join(".codex-plugin/plugin.json")).map_err(|_| {
+            RouterError::coded(
+                "E_SOURCE_INVALID",
+                "plugin source is missing .codex-plugin/plugin.json identity evidence",
+            )
+        })?,
+    )
+    .map_err(|_| {
+        RouterError::coded(
+            "E_SOURCE_INVALID",
+            "plugin source identity evidence is invalid",
+        )
+    })?;
+    if !source_plugin_version_matches_release(&plugin.version, &release.version) {
+        return Err(RouterError::coded(
+            "E_SOURCE_INVALID",
+            "plugin and release manifests disagree about the source version",
+        ));
+    }
+    Ok(())
+}
+
+fn source_plugin_version_matches_release(plugin_version: &str, release_version: &str) -> bool {
+    if plugin_version == release_version {
+        return true;
+    }
+    let Ok(plugin) = Version::parse(plugin_version) else {
+        return false;
+    };
+    let Ok(release) = Version::parse(release_version) else {
+        return false;
+    };
+    plugin.major == release.major
+        && plugin.minor == release.minor
+        && plugin.patch == release.patch
+        && plugin.pre == release.pre
+        && plugin.build.as_str().starts_with("codex.")
+}
+
+fn validate_current_payload(root: &Path) -> Result<()> {
+    validate_required_payload_files(root, "E_PROFILE_INCOMPATIBLE")?;
+    validate_profiles(root)?;
+    validate_current_compatibility(root)
+}
+
+fn validate_v1_0_2_payload(root: &Path) -> Result<()> {
+    validate_required_payload_files(root, "E_PROFILE_INCOMPATIBLE")?;
+    validate_v1_0_2_profiles(root)?;
+    validate_v1_0_2_compatibility(root)
+}
+
+fn validate_legacy_v1_payload(root: &Path) -> Result<()> {
+    validate_required_payload_files(root, "E_LEGACY_PROFILE_INCOMPATIBLE")?;
+    validate_legacy_v1_profiles(root)?;
+    let compatibility: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("compatibility.json")).map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy payload is missing compatibility.json",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy compatibility metadata is invalid",
+            )
+        })?;
+    if compatibility["installer"]["managedBlockProtocol"] != 1
+        || compatibility["installer"]["configToml"] != "untouched-1.0.0"
+    {
+        return Err(RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            "recognized legacy compatibility metadata does not match the 1.0.x contract",
+        ));
+    }
+    validate_platform_compatibility(&compatibility, "E_LEGACY_PROFILE_INCOMPATIBLE")
+}
+
+fn validate_required_payload_files(root: &Path, code: &'static str) -> Result<()> {
     for relative in required_payload_paths() {
         if !root.join(relative).is_file() {
             return Err(RouterError::coded(
-                "E_PROFILE_INCOMPATIBLE",
+                code,
                 format!("required payload file is missing: {relative}"),
             ));
         }
     }
-    validate_profiles(root)?;
+    Ok(())
+}
+
+fn validate_current_compatibility(root: &Path) -> Result<()> {
     let compatibility: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("compatibility.json"))?)?;
     let config_contract = &compatibility["installer"]["configToml"];
@@ -298,6 +444,53 @@ fn validate_payload(root: &Path) -> Result<()> {
             "compatibility metadata does not describe the safe-auto config boundary",
         ));
     }
+    let profile_override = &compatibility["installer"]["profileOverride"];
+    if profile_override["path"] != USER_PROFILE_FILE
+        || profile_override["precedence"]
+            != "explicit-user-session-cli>validated-user-override>shipped-default"
+        || profile_override["invalid"] != "fail-closed"
+        || profile_override["runtimeAllowlist"] != "create-thread-intersection-fail-closed"
+        || profile_override["reset"] != "backup-and-remove"
+        || profile_override["restore"] != "managed-backup-only-validate-atomic"
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "compatibility metadata does not describe the persistent profile override boundary",
+        ));
+    }
+    validate_platform_compatibility(&compatibility, "E_PROFILE_INCOMPATIBLE")
+}
+
+fn validate_v1_0_2_compatibility(root: &Path) -> Result<()> {
+    let compatibility: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("compatibility.json")).map_err(|_| {
+            RouterError::coded(
+                "E_PROFILE_INCOMPATIBLE",
+                "recognized 1.0.2 payload is missing compatibility.json",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_PROFILE_INCOMPATIBLE",
+                "recognized 1.0.2 compatibility metadata is invalid",
+            )
+        })?;
+    let config_contract = &compatibility["installer"]["configToml"];
+    if config_contract["ordinaryInstallAndRoutingEnable"] != "untouched"
+        || config_contract["safeAutoApproval"] != "explicit-opt-in-three-keys"
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "recognized 1.0.2 compatibility metadata is incompatible",
+        ));
+    }
+    validate_platform_compatibility(&compatibility, "E_PROFILE_INCOMPATIBLE")
+}
+
+fn validate_platform_compatibility(
+    compatibility: &serde_json::Value,
+    code: &'static str,
+) -> Result<()> {
     let supported = compatibility["runtime"]["platforms"]
         .as_array()
         .is_some_and(|items| {
@@ -307,7 +500,7 @@ fn validate_payload(root: &Path) -> Result<()> {
         });
     if !supported {
         return Err(RouterError::coded(
-            "E_PROFILE_INCOMPATIBLE",
+            code,
             "current platform is not declared compatible",
         ));
     }
@@ -320,7 +513,7 @@ fn validate_payload(root: &Path) -> Result<()> {
         });
     if !supported_architecture {
         return Err(RouterError::coded(
-            "E_PROFILE_INCOMPATIBLE",
+            code,
             "current architecture is not declared compatible",
         ));
     }
@@ -359,6 +552,14 @@ fn required_payload_paths() -> [&'static str; 26] {
 }
 
 fn validate_profiles(root: &Path) -> Result<()> {
+    validate_modern_profiles(root, true)
+}
+
+fn validate_v1_0_2_profiles(root: &Path) -> Result<()> {
+    validate_modern_profiles(root, false)
+}
+
+fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Result<()> {
     let schema: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("profiles/schema.json"))?)?;
     let schema_required = schema["required"].as_array().is_some_and(|items| {
@@ -495,6 +696,34 @@ fn validate_profiles(root: &Path) -> Result<()> {
             "portable profile selection is invalid",
         ));
     }
+    if require_profile_override {
+        let override_policy = profile_table(&portable, "profile_override")?;
+        let precedence = override_policy
+            .get("precedence")
+            .and_then(Item::as_array)
+            .is_some_and(|items| {
+                items.iter().map(|item| item.as_str()).eq([
+                    Some("explicit-user-session-cli"),
+                    Some("validated-user-override"),
+                    Some("shipped-default"),
+                ])
+            });
+        if override_policy.get("user_path").and_then(Item::as_str) != Some(USER_PROFILE_FILE)
+            || !precedence
+            || override_policy.get("invalid").and_then(Item::as_str) != Some("fail-closed")
+            || override_policy
+                .get("runtime_allowlist")
+                .and_then(Item::as_str)
+                != Some("create-thread-intersection-fail-closed")
+            || override_policy.get("restore").and_then(Item::as_str)
+                != Some("managed-backup-only-validate-atomic")
+        {
+            return Err(RouterError::coded(
+                "E_PROFILE_INCOMPATIBLE",
+                "portable profile does not declare the persistent override boundary",
+            ));
+        }
+    }
 
     let stable_metadata = profile_table(&stable, "metadata")?;
     if stable_metadata.get("status").and_then(Item::as_str) != Some("reference") {
@@ -519,6 +748,154 @@ fn validate_profiles(root: &Path) -> Result<()> {
         ));
     }
     require_routing(&candidate, &["B2", "C1"])?;
+    Ok(())
+}
+
+fn validate_legacy_v1_profiles(root: &Path) -> Result<()> {
+    let schema: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("profiles/schema.json")).map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy payload is missing its profile schema",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy profile schema is invalid",
+            )
+        })?;
+    let schema_required = schema["required"].as_array().is_some_and(|items| {
+        ["schema_version", "metadata", "compatibility", "routing"]
+            .iter()
+            .all(|key| items.iter().any(|item| item.as_str() == Some(key)))
+    });
+    if !schema_required || schema["properties"]["schema_version"]["const"] != 1 {
+        return Err(RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            "recognized legacy profile schema does not match the 1.0.x contract",
+        ));
+    }
+    let portable = parse_legacy_profile(&root.join("profiles/portable/default.toml"))?;
+    let stable =
+        parse_legacy_profile(&root.join("profiles/stable/current-gpt-5.6-reference.toml"))?;
+    let candidate = parse_legacy_profile(&root.join("profiles/candidate/example-next-model.toml"))?;
+    for profile in [&portable, &stable, &candidate] {
+        if profile.get("schema_version").and_then(Item::as_integer) != Some(1) {
+            return Err(RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy profile schema_version must equal 1",
+            ));
+        }
+    }
+    let preflight = legacy_profile_table(&portable, "preflight")?;
+    for key in [
+        "require_explicit_runtime_metadata",
+        "require_exact_route_match",
+        "require_platform_capability",
+    ] {
+        if preflight.get(key).and_then(Item::as_bool) != Some(true) {
+            return Err(RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy portable preflight has changed",
+            ));
+        }
+    }
+    for key in [
+        "on_unknown",
+        "on_missing_profile",
+        "on_incompatible_profile",
+        "on_disabled_candidate",
+    ] {
+        if preflight.get(key).and_then(Item::as_str) != Some("fail-closed") {
+            return Err(RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                "recognized legacy portable profile no longer fails closed",
+            ));
+        }
+    }
+    let selection = legacy_profile_table(&portable, "selection")?;
+    if selection.get("stable_profile").and_then(Item::as_str)
+        != Some("stable/current-gpt-5.6-reference.toml")
+        || selection
+            .get("allow_candidate_as_default")
+            .and_then(Item::as_bool)
+            != Some(false)
+        || selection.get("silent_fallback").and_then(Item::as_bool) != Some(false)
+    {
+        return Err(RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            "recognized legacy profile selection has changed",
+        ));
+    }
+    if legacy_profile_table(&stable, "metadata")?
+        .get("status")
+        .and_then(Item::as_str)
+        != Some("reference")
+    {
+        return Err(RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            "recognized legacy stable profile is not a reference",
+        ));
+    }
+    require_legacy_routing(&stable, &TIER_NAMES)?;
+    let candidate_metadata = legacy_profile_table(&candidate, "metadata")?;
+    if candidate_metadata.get("status").and_then(Item::as_str) != Some("disabled")
+        || candidate_metadata.get("enabled").and_then(Item::as_bool) != Some(false)
+        || candidate_metadata
+            .get("evaluation_state")
+            .and_then(Item::as_str)
+            != Some("unevaluated")
+    {
+        return Err(RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            "recognized legacy candidate profile has changed",
+        ));
+    }
+    require_legacy_routing(&candidate, &["B2", "C1"])
+}
+
+fn parse_legacy_profile(path: &Path) -> Result<DocumentMut> {
+    fs::read_to_string(path)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                format!("recognized legacy profile is missing: {}", path.display()),
+            )
+        })?
+        .parse::<DocumentMut>()
+        .map_err(|_| {
+            RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                format!("recognized legacy profile is invalid: {}", path.display()),
+            )
+        })
+}
+
+fn legacy_profile_table<'a>(profile: &'a DocumentMut, name: &str) -> Result<&'a Table> {
+    profile.get(name).and_then(Item::as_table).ok_or_else(|| {
+        RouterError::coded(
+            "E_LEGACY_PROFILE_INCOMPATIBLE",
+            format!("recognized legacy profile table {name} is missing"),
+        )
+    })
+}
+
+fn require_legacy_routing(profile: &DocumentMut, tiers: &[&str]) -> Result<()> {
+    let routing = legacy_profile_table(profile, "routing")?;
+    for tier in tiers {
+        let entry = routing.get(tier).and_then(Item::as_inline_table);
+        let valid = entry.is_some_and(|table| {
+            table.get("model").and_then(|item| item.as_str()).is_some()
+                && table.get("effort").and_then(|item| item.as_str()).is_some()
+        });
+        if !valid {
+            return Err(RouterError::coded(
+                "E_LEGACY_PROFILE_INCOMPATIBLE",
+                format!("recognized legacy routing entry {tier} is incomplete"),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -603,6 +980,117 @@ fn payload_hash(root: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn installed_contract(state: &State) -> Result<InstalledContract> {
+    match state.version.as_str() {
+        "1.0.0" => Ok(InstalledContract::LegacyV1_0_0),
+        "1.0.1" => Ok(InstalledContract::LegacyV1_0_1),
+        "1.0.2" => Ok(InstalledContract::V1_0_2),
+        _ => {
+            let version = Version::parse(&state.version).map_err(|_| {
+                RouterError::coded("E_STATE_INVALID", "installed version is not semantic")
+            })?;
+            if version < Version::new(1, 0, 2) {
+                return Err(RouterError::coded(
+                    "E_LEGACY_CONTRACT_UNSUPPORTED",
+                    format!(
+                        "installed router {} predates the recognized migration contracts; preserve it and use the documented recovery path",
+                        state.version
+                    ),
+                ));
+            }
+            Ok(InstalledContract::Current)
+        }
+    }
+}
+
+fn validate_installed_version_root(root: &Path, state: &State) -> Result<()> {
+    let installed: State =
+        serde_json::from_slice(&fs::read(root.join("install.json")).map_err(|_| {
+            RouterError::coded(
+                "E_PAYLOAD_DRIFT",
+                "installed version is missing its state evidence",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_PAYLOAD_DRIFT",
+                "installed version state evidence is invalid",
+            )
+        })?;
+    if installed.version != state.version || installed.payload_sha256 != state.payload_sha256 {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "current.json and installed version state evidence disagree",
+        ));
+    }
+    let manifest: ReleaseManifest =
+        serde_json::from_slice(&fs::read(root.join("release/manifest.json")).map_err(|_| {
+            RouterError::coded(
+                "E_PAYLOAD_DRIFT",
+                "installed version is missing its release manifest evidence",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_PAYLOAD_DRIFT",
+                "installed release manifest evidence is invalid",
+            )
+        })?;
+    if manifest.schema_version != 1
+        || manifest.channel != "stable"
+        || manifest.version != state.version
+        || manifest.payload_sha256 != state.payload_sha256
+    {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed release manifest does not match the active state",
+        ));
+    }
+    validate_optional_installed_plugin_identity(root, state)?;
+    match installed_contract(state)? {
+        InstalledContract::LegacyV1_0_0 | InstalledContract::LegacyV1_0_1 => {
+            validate_legacy_v1_payload(root)?
+        }
+        InstalledContract::V1_0_2 => validate_v1_0_2_payload(root)?,
+        InstalledContract::Current => validate_current_payload(root)?,
+    }
+    if payload_hash(root)? != state.payload_sha256 {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed version payload hash differs from its exact state evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_installed_plugin_identity(root: &Path, state: &State) -> Result<()> {
+    let path = root.join(".codex-plugin/plugin.json");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed plugin identity evidence is not a regular file",
+        ));
+    }
+    let plugin: PluginManifest = serde_json::from_slice(&fs::read(&path)?).map_err(|_| {
+        RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed plugin identity evidence is invalid",
+        )
+    })?;
+    if plugin.version != state.version {
+        return Err(RouterError::coded(
+            "E_PAYLOAD_DRIFT",
+            "installed plugin identity evidence does not match the active state",
+        ));
+    }
+    Ok(())
+}
+
 fn install(
     home: &Path,
     source: SourceRelease,
@@ -610,6 +1098,10 @@ fn install(
     allow_upgrade: bool,
 ) -> Result<Outcome> {
     ensure_no_pending_transaction(home)?;
+    // An override lives outside the immutable payload precisely so upgrades preserve its
+    // bytes.  That does not permit an invalid override to be silently carried forward: every
+    // install/upgrade preflight validates it before changing the active router state.
+    validate_user_profile_if_present(home)?;
     let existing_state = read_state(home)?;
     let agents_before = read_optional(&agents_path(home))?;
     let mut next_state = State {
@@ -649,16 +1141,11 @@ fn install(
                 "a different router version is installed; use upgrade",
             ));
         } else if current.version == next_state.version {
-            // An explicit upgrade may refresh a payload at the same public version. This is
-            // used for local 1.0.2 policy payloads and keeps safe-auto/config untouched.
-            ensure_managed_identity(agents_before.as_deref(), current)?;
-            let active_root = versions_path(home).join(&current.version);
-            if payload_hash(&active_root)? != current.payload_sha256 {
-                return Err(RouterError::coded(
-                    "E_PAYLOAD_DRIFT",
-                    "installed version payload no longer matches current.json",
-                ));
-            }
+            // A local same-version refresh is allowed only after the active installation is
+            // byte-for-byte intact.  Identity-only replacement would overwrite a real user
+            // edit to the managed block, so it is deliberately not a migration escape hatch.
+            ensure_managed_matches(agents_before.as_deref(), current)?;
+            validate_active_installation(home, current)?;
             refresh_same_version = true;
         } else {
             ensure_managed_matches(agents_before.as_deref(), current)?;
@@ -681,11 +1168,6 @@ fn install(
     }
 
     let agents_after = match existing_state.as_ref() {
-        Some(previous) if refresh_same_version => replace_managed_by_identity(
-            agents_before.as_deref().unwrap_or_default(),
-            previous,
-            &next_state,
-        )?,
         Some(previous) => replace_managed(
             agents_before.as_deref().unwrap_or_default(),
             previous,
@@ -816,6 +1298,7 @@ fn doctor(home: &Path) -> Result<Outcome> {
     };
     validate_active_installation(home, &state)?;
     ensure_managed_matches(agents.as_deref(), &state)?;
+    let profile = effective_profile_report(home, &state)?;
     let safe_detail = match evaluate_safe_auto(home)? {
         SafeAutoStatus::Active => "safe-auto=active",
         SafeAutoStatus::Absent => "safe-auto=absent",
@@ -826,14 +1309,585 @@ fn doctor(home: &Path) -> Result<Outcome> {
             ))
         }
     };
-    Ok(outcome(
+    Ok(with_profile(
+        outcome(
         "doctor",
         "OK_ENABLED",
         Some(state.version),
         false,
         None,
         vec![format!("managed block, payload hash, profile policy, and runtime platform are valid; {safe_detail}")],
+    ),
+        profile,
     ))
+}
+
+fn profile_show(home: &Path) -> Result<Outcome> {
+    let state = active_state(home)?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-show",
+            if profile.source == "default" {
+                "OK_DEFAULT"
+            } else {
+                "OK_USER_OVERRIDE"
+            },
+            Some(state.version),
+            false,
+            None,
+            vec!["reported only the effective tier mapping, source, path, and mapping hash".into()],
+        ),
+        profile,
+    ))
+}
+
+fn profile_validate(home: &Path) -> Result<Outcome> {
+    let state = active_state(home)?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-validate",
+            if profile.source == "default" {
+                "OK_DEFAULT"
+            } else {
+                "OK_USER_OVERRIDE"
+            },
+            Some(state.version),
+            false,
+            None,
+            vec!["effective routing mapping is syntactically and semantically valid; runtime allowlist intersection remains fail-closed at handoff time".into()],
+        ),
+        profile,
+    ))
+}
+
+fn profile_init(home: &Path) -> Result<Outcome> {
+    let state = active_state(home)?;
+    let (_, default_mapping) = active_default_mapping(home, &state)?;
+    if read_user_profile(home)?.is_some() {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_EXISTS",
+            format!(
+                "a user override already exists at {}; run `profile validate`, `profile set`, or explicit `profile reset`",
+                user_profile_path(home).display()
+            ),
+        ));
+    }
+    let rendered = render_user_profile(&default_mapping);
+    write_user_profile_if_unchanged(home, None, &rendered)?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-init",
+            "OK",
+            Some(state.version),
+            true,
+            None,
+            vec![
+                "created a complete editable user override from the shipped active default".into(),
+            ],
+        ),
+        profile,
+    ))
+}
+
+fn profile_set(home: &Path, tier: &str, model: &str, effort: &str) -> Result<Outcome> {
+    if !TIER_NAMES.contains(&tier) {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_INVALID",
+            format!(
+                "unknown tier {tier}; expected one of {}",
+                TIER_NAMES.join(", ")
+            ),
+        ));
+    }
+    let state = active_state(home)?;
+    let (_, default_mapping) = active_default_mapping(home, &state)?;
+    let previous = read_user_profile(home)?;
+    let mut mapping = match previous.as_deref() {
+        Some(contents) => parse_user_profile_mapping(contents)?,
+        None => default_mapping,
+    };
+    mapping.insert(
+        tier.into(),
+        Route {
+            model: model.into(),
+            effort: effort.into(),
+        },
+    );
+    validate_routing_mapping(&mapping, "E_PROFILE_OVERRIDE_INVALID")?;
+    let rendered = render_user_profile(&mapping);
+    write_user_profile_if_unchanged(home, previous.as_deref(), &rendered)?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-set",
+            "OK",
+            Some(state.version),
+            true,
+            None,
+            vec![format!(
+                "updated {tier} and wrote a complete validated user override"
+            )],
+        ),
+        profile,
+    ))
+}
+
+fn profile_reset(home: &Path) -> Result<Outcome> {
+    let state = active_state(home)?;
+    let Some(previous) = read_user_profile(home)? else {
+        let profile = effective_profile_report(home, &state)?;
+        return Ok(with_profile(
+            outcome(
+                "profile-reset",
+                "OK_NO_CHANGE",
+                Some(state.version),
+                false,
+                None,
+                vec!["no user override exists; the shipped default remains active".into()],
+            ),
+            profile,
+        ));
+    };
+    let backups = user_profile_backup_path(home)?;
+    write_profile_backup(&backups, &previous)?;
+    if read_user_profile(home)?.as_deref() != Some(previous.as_str()) {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_DRIFT",
+            "user override changed while preparing reset; its backup was retained and no override was removed",
+        ));
+    }
+    fs::remove_file(user_profile_path(home))?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-reset",
+            "OK",
+            Some(state.version),
+            true,
+            Some(backups.display().to_string()),
+            vec![
+                "backed up and removed the user override; the shipped default is active again"
+                    .into(),
+            ],
+        ),
+        profile,
+    ))
+}
+
+fn profile_restore(home: &Path, requested_backup: &Path) -> Result<Outcome> {
+    let state = active_state(home)?;
+    let backup = validated_user_profile_backup_path(home, requested_backup)?;
+    let metadata_path = profile_backup_metadata_path(&backup)?;
+    let metadata_file = fs::symlink_metadata(&metadata_path).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile backup is missing its managed integrity metadata",
+        )
+    })?;
+    if metadata_file.file_type().is_symlink() || !metadata_file.is_file() {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile backup integrity metadata must be a regular managed file",
+        ));
+    }
+    let metadata: ProfileBackup =
+        serde_json::from_slice(&fs::read(&metadata_path).map_err(|_| {
+            RouterError::coded(
+                "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+                "profile backup is missing its managed integrity metadata",
+            )
+        })?)
+        .map_err(|_| {
+            RouterError::coded(
+                "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+                "profile backup integrity metadata is invalid",
+            )
+        })?;
+    let contents = fs::read_to_string(&backup).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile backup is not valid UTF-8 TOML",
+        )
+    })?;
+    if metadata.protocol != PROTOCOL
+        || metadata.override_sha256 != bytes_sha256(contents.as_bytes())
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_DRIFT",
+            "profile backup bytes do not match their managed integrity metadata",
+        ));
+    }
+    if let Err(error) = parse_user_profile_mapping(&contents) {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            format!("profile backup does not contain a valid override: {error}"),
+        ));
+    }
+    if read_user_profile(home)?.is_some() {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_DRIFT",
+            "a user override exists; refusing to overwrite it during profile restore",
+        ));
+    }
+    write_user_profile_if_unchanged(home, None, &contents)?;
+    let profile = effective_profile_report(home, &state)?;
+    Ok(with_profile(
+        outcome(
+            "profile-restore",
+            "OK",
+            Some(state.version),
+            true,
+            Some(backup.display().to_string()),
+            vec![
+                "validated and atomically restored the managed profile backup without overwriting an existing user override".into(),
+            ],
+        ),
+        profile,
+    ))
+}
+
+fn active_state(home: &Path) -> Result<State> {
+    let state = read_state(home)?.ok_or_else(|| {
+        RouterError::coded(
+            "E_NOT_INSTALLED",
+            "routing is not enabled; install it before managing the effective profile",
+        )
+    })?;
+    validate_active_installation(home, &state)?;
+    Ok(state)
+}
+
+fn active_default_mapping(
+    home: &Path,
+    state: &State,
+) -> Result<(PathBuf, BTreeMap<String, Route>)> {
+    let path = versions_path(home)
+        .join(&state.version)
+        .join("profiles/stable/current-gpt-5.6-reference.toml");
+    let contents = fs::read_to_string(&path).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "active default tier mapping is missing",
+        )
+    })?;
+    let mapping = parse_routing_mapping(&contents, "E_PROFILE_INCOMPATIBLE")?;
+    Ok((path, mapping))
+}
+
+fn effective_profile_report(home: &Path, state: &State) -> Result<ProfileReport> {
+    let (default_path, default_mapping) = active_default_mapping(home, state)?;
+    let (source, path, routing) = match read_user_profile(home)? {
+        Some(contents) => (
+            "user override".into(),
+            user_profile_path(home),
+            parse_user_profile_mapping(&contents)?,
+        ),
+        None => ("default".into(), default_path, default_mapping),
+    };
+    Ok(ProfileReport {
+        source,
+        path: path.display().to_string(),
+        mapping_sha256: routing_hash(&routing),
+        routing,
+    })
+}
+
+fn parse_user_profile_mapping(contents: &str) -> Result<BTreeMap<String, Route>> {
+    let document = contents.parse::<DocumentMut>().map_err(|error| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_INVALID",
+            format!("user override TOML is invalid: {error}; repair it or run `profile reset`"),
+        )
+    })?;
+    if document.get("schema_version").and_then(Item::as_integer) != Some(1) {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_INVALID",
+            "user override schema_version must equal 1; repair it or run `profile reset`",
+        ));
+    }
+    routing_mapping_from_document(&document, "E_PROFILE_OVERRIDE_INVALID")
+}
+
+fn parse_routing_mapping(contents: &str, code: &'static str) -> Result<BTreeMap<String, Route>> {
+    let document = contents.parse::<DocumentMut>().map_err(|error| {
+        RouterError::coded(code, format!("tier mapping TOML is invalid: {error}"))
+    })?;
+    routing_mapping_from_document(&document, code)
+}
+
+fn routing_mapping_from_document(
+    document: &DocumentMut,
+    code: &'static str,
+) -> Result<BTreeMap<String, Route>> {
+    let routing = document
+        .get("routing")
+        .and_then(Item::as_table)
+        .ok_or_else(|| RouterError::coded(code, "tier mapping [routing] table is missing"))?;
+    for (tier, _) in routing.iter() {
+        if !TIER_NAMES.contains(&tier) {
+            return Err(RouterError::coded(
+                code,
+                format!("tier mapping has unknown tier {tier}"),
+            ));
+        }
+    }
+    let mut mapping = BTreeMap::new();
+    for tier in TIER_NAMES {
+        let entry = routing
+            .get(tier)
+            .and_then(Item::as_inline_table)
+            .ok_or_else(|| RouterError::coded(code, format!("tier mapping is missing {tier}")))?;
+        if entry.len() != 2 {
+            return Err(RouterError::coded(
+                code,
+                format!("tier mapping {tier} must contain only model and effort"),
+            ));
+        }
+        let model = entry
+            .get("model")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| {
+                RouterError::coded(code, format!("tier mapping {tier} model is missing"))
+            })?;
+        let effort = entry
+            .get("effort")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| {
+                RouterError::coded(code, format!("tier mapping {tier} effort is missing"))
+            })?;
+        mapping.insert(
+            tier.into(),
+            Route {
+                model: model.into(),
+                effort: effort.into(),
+            },
+        );
+    }
+    validate_routing_mapping(&mapping, code)?;
+    Ok(mapping)
+}
+
+fn validate_routing_mapping(mapping: &BTreeMap<String, Route>, code: &'static str) -> Result<()> {
+    if mapping.len() != TIER_NAMES.len()
+        || TIER_NAMES.iter().any(|tier| !mapping.contains_key(*tier))
+    {
+        return Err(RouterError::coded(
+            code,
+            "tier mapping must contain every tier exactly once",
+        ));
+    }
+    for tier in TIER_NAMES {
+        let route = mapping.get(tier).expect("validated tier mapping entry");
+        if route.model.trim().is_empty() || route.model.chars().any(char::is_whitespace) {
+            return Err(RouterError::coded(
+                code,
+                format!("tier mapping {tier} model must be a non-empty token"),
+            ));
+        }
+        if route.effort.trim().is_empty() {
+            return Err(RouterError::coded(
+                code,
+                format!("tier mapping {tier} effort must be non-empty"),
+            ));
+        }
+        if tier == "A0" {
+            if route.model != "current-qualified-root" || route.effort != "runtime-qualified" {
+                return Err(RouterError::coded(
+                    code,
+                    "A0 must remain current-qualified-root/runtime-qualified and cannot create a routed root",
+                ));
+            }
+        } else if route.model == "current-qualified-root"
+            || !matches!(route.effort.as_str(), "medium" | "high" | "xhigh" | "max")
+        {
+            return Err(RouterError::coded(
+                code,
+                format!(
+                    "tier mapping {tier} must use a future-compatible model token and one of medium/high/xhigh/max"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn render_user_profile(mapping: &BTreeMap<String, Route>) -> String {
+    let mut output = String::from(
+        "# Persistent Z Codex Router user override.\n# Explicit user/session/CLI selections still take precedence.\n# Runtime create_thread allowlists are intersected at handoff time and fail closed.\nschema_version = 1\n\n[metadata]\nname = \"user-tier-override\"\npurpose = \"Persistent local tier-to-model override outside immutable release payloads.\"\n\n[routing]\n",
+    );
+    for tier in TIER_NAMES {
+        let route = mapping.get(tier).expect("complete routing map");
+        output.push_str(&format!(
+            "{tier} = {{ model = \"{}\", effort = \"{}\" }}\n",
+            route.model, route.effort
+        ));
+    }
+    output
+}
+
+fn routing_hash(mapping: &BTreeMap<String, Route>) -> String {
+    let mut hasher = Sha256::new();
+    for (tier, route) in mapping {
+        hasher.update(tier.as_bytes());
+        hasher.update([0]);
+        hasher.update(route.model.as_bytes());
+        hasher.update([0]);
+        hasher.update(route.effort.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn user_profile_path(home: &Path) -> PathBuf {
+    home.join(USER_PROFILE_FILE)
+}
+
+fn read_user_profile(home: &Path) -> Result<Option<String>> {
+    let path = user_profile_path(home);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(RouterError::coded(
+                "E_PROFILE_OVERRIDE_INVALID",
+                "user override path must be a regular file, not a link or directory",
+            ))
+        }
+        Ok(_) => fs::read_to_string(&path).map(Some).map_err(Into::into),
+    }
+}
+
+fn validate_user_profile_if_present(home: &Path) -> Result<()> {
+    if let Some(contents) = read_user_profile(home)? {
+        parse_user_profile_mapping(&contents)?;
+    }
+    Ok(())
+}
+
+fn write_user_profile_if_unchanged(
+    home: &Path,
+    expected_before: Option<&str>,
+    contents: &str,
+) -> Result<()> {
+    if read_user_profile(home)?.as_deref() != expected_before {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_DRIFT",
+            "user override changed while preparing a write; refusing to overwrite it",
+        ));
+    }
+    atomic_write(&user_profile_path(home), contents.as_bytes())
+}
+
+fn user_profile_backup_directory(home: &Path) -> Result<PathBuf> {
+    let directory = home.join(USER_PROFILE_BACKUP_DIRECTORY);
+    if directory.exists() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(RouterError::coded(
+                "E_PROFILE_OVERRIDE_INVALID",
+                "user override backup directory must be a regular directory",
+            ));
+        }
+    } else {
+        fs::create_dir_all(&directory)?;
+    }
+    Ok(directory)
+}
+
+fn user_profile_backup_path(home: &Path) -> Result<PathBuf> {
+    Ok(user_profile_backup_directory(home)?.join(format!("backup-{}.toml", now_ns())))
+}
+
+fn profile_backup_metadata_path(backup: &Path) -> Result<PathBuf> {
+    let name = backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            RouterError::coded(
+                "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+                "profile backup path has no valid file name",
+            )
+        })?;
+    Ok(backup.with_file_name(format!("{name}.json")))
+}
+
+fn write_profile_backup(path: &Path, contents: &str) -> Result<()> {
+    atomic_write(path, contents.as_bytes())?;
+    let metadata = ProfileBackup {
+        protocol: PROTOCOL,
+        override_sha256: bytes_sha256(contents.as_bytes()),
+    };
+    atomic_write(
+        &profile_backup_metadata_path(path)?,
+        serde_json::to_vec_pretty(&metadata)?.as_slice(),
+    )
+}
+
+fn validated_user_profile_backup_path(home: &Path, requested: &Path) -> Result<PathBuf> {
+    if requested
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile restore backup path cannot contain '..'",
+        ));
+    }
+    let directory = user_profile_backup_directory(home)?;
+    let directory_canonical = fs::canonicalize(&directory).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile backup directory cannot be resolved",
+        )
+    })?;
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        directory.join(requested)
+    };
+    let metadata = fs::symlink_metadata(&candidate).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile restore backup does not exist",
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile restore backup must be a regular managed file",
+        ));
+    }
+    let canonical = fs::canonicalize(&candidate).map_err(|_| {
+        RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile restore backup cannot be resolved",
+        )
+    })?;
+    let valid_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("backup-") && name.ends_with(".toml"));
+    if canonical.parent() != Some(directory_canonical.as_path()) || !valid_name {
+        return Err(RouterError::coded(
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID",
+            "profile restore backup escapes the managed backup directory",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn bytes_sha256(contents: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(contents);
+    format!("{:x}", hasher.finalize())
+}
+
+fn with_profile(mut outcome: Outcome, profile: ProfileReport) -> Outcome {
+    outcome.profile = Some(profile);
+    outcome
 }
 
 fn recover(home: &Path) -> Result<Outcome> {
@@ -1527,53 +2581,6 @@ fn replace_managed(existing: &str, previous: &State, next: &State) -> Result<Str
     Ok(replaced)
 }
 
-fn replace_managed_by_identity(existing: &str, previous: &State, next: &State) -> Result<String> {
-    let identity = format!(
-        "id={ROUTER_ID} version={} sha256={}",
-        previous.version, previous.payload_sha256
-    );
-    if existing.matches(managed_begin()).count() != 1 || !existing.contains(&identity) {
-        return Err(RouterError::coded(
-            "E_MANAGED_BLOCK_DRIFT",
-            "managed AGENTS.md block identity is not byte-for-byte intact",
-        ));
-    }
-    let begin = existing.find(managed_begin()).ok_or_else(|| {
-        RouterError::coded("E_MANAGED_BLOCK_DRIFT", "managed AGENTS.md block is absent")
-    })?;
-    let end_marker = format!("<!-- z-codex-router:end id={ROUTER_ID} -->");
-    let end = existing[begin..]
-        .find(&end_marker)
-        .map(|offset| begin + offset + end_marker.len())
-        .ok_or_else(|| {
-            RouterError::coded(
-                "E_MANAGED_BLOCK_DRIFT",
-                "managed AGENTS.md block is truncated",
-            )
-        })?;
-    let mut replaced = String::with_capacity(existing.len() + managed_block(next).len());
-    replaced.push_str(&existing[..begin]);
-    replaced.push_str(&managed_block(next));
-    replaced.push_str(&existing[end..]);
-    Ok(replaced)
-}
-
-fn ensure_managed_identity(existing: Option<&str>, state: &State) -> Result<()> {
-    let text = existing
-        .ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "AGENTS.md is missing"))?;
-    let identity = format!(
-        "id={ROUTER_ID} version={} sha256={}",
-        state.version, state.payload_sha256
-    );
-    if text.matches(managed_begin()).count() == 1 && text.contains(&identity) {
-        return Ok(());
-    }
-    Err(RouterError::coded(
-        "E_MANAGED_BLOCK_DRIFT",
-        "managed AGENTS.md block identity is invalid",
-    ))
-}
-
 fn ensure_managed_matches(existing: Option<&str>, state: &State) -> Result<()> {
     let text = existing
         .ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "AGENTS.md is missing"))?;
@@ -1598,6 +2605,14 @@ fn managed_begin() -> &'static str {
 }
 
 fn managed_block(state: &State) -> String {
+    match state.version.as_str() {
+        "1.0.0" => legacy_v1_0_0_managed_block(state),
+        "1.0.1" => legacy_v1_0_1_managed_block(state),
+        _ => modern_managed_block(state),
+    }
+}
+
+fn modern_managed_block(state: &State) -> String {
     let boundary = if !state.agents_existed_before && state.managed_separator.is_empty() {
         String::new()
     } else {
@@ -1609,6 +2624,29 @@ fn managed_block(state: &State) -> String {
     };
     format!(
         "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. Then read `<codex_home>/z-codex-router/current.json`, followed by `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority. Runtime metadata is tri-state: exact observable fields are verified, visible differences are mismatch and fail closed, and missing fields are runtime_observability=unobservable. Route receipt protocol 1 is parent-owned: only the real create_thread caller may classify and create it, automatic root creation is at most one, child threads do not reclassify or recurse, and thread IDs come only from the tool return.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        state.version, state.payload_sha256
+    )
+}
+
+fn legacy_v1_0_0_managed_block(state: &State) -> String {
+    format!(
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        state.version, state.payload_sha256
+    )
+}
+
+fn legacy_v1_0_1_managed_block(state: &State) -> String {
+    let boundary = if !state.agents_existed_before && state.managed_separator.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " agents_existed_before={} separator={}",
+            state.agents_existed_before,
+            managed_separator_label(&state.managed_separator)
+        )
+    };
+    format!(
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
         state.version, state.payload_sha256
     )
 }
@@ -1888,21 +2926,9 @@ fn restore_backup_contents(home: &Path, backup: &Backup) -> Result<()> {
 }
 
 fn validate_active_installation(home: &Path, state: &State) -> Result<()> {
-    if Version::parse(&state.version).is_err() {
-        return Err(RouterError::coded(
-            "E_STATE_INVALID",
-            "installed version is not semantic",
-        ));
-    }
+    let _ = installed_contract(state)?;
     let version_root = versions_path(home).join(&state.version);
-    validate_payload(&version_root)?;
-    if payload_hash(&version_root)? != state.payload_sha256 {
-        return Err(RouterError::coded(
-            "E_PAYLOAD_DRIFT",
-            "installed version payload hash differs from state",
-        ));
-    }
-    Ok(())
+    validate_installed_version_root(&version_root, state)
 }
 
 fn remove_abandoned_version(home: &Path, state: &State) -> Result<()> {
@@ -1934,13 +2960,7 @@ fn remove_abandoned_version_by_identity(
             "pending version conflicts with managed assets",
         ));
     }
-    validate_payload(&root)?;
-    if payload_hash(&root)? != payload_sha256 {
-        return Err(RouterError::coded(
-            "E_PAYLOAD_DRIFT",
-            "pending version payload hash differs from its transaction",
-        ));
-    }
+    validate_installed_version_root(&root, &installed)?;
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -2007,13 +3027,7 @@ fn validate_version_assets(versions: &Path) -> Result<()> {
                 "managed version directory does not match its state",
             ));
         }
-        validate_payload(&entry.path())?;
-        if payload_hash(&entry.path())? != state.payload_sha256 {
-            return Err(RouterError::coded(
-                "E_PAYLOAD_DRIFT",
-                "managed version payload hash differs from its state",
-            ));
-        }
+        validate_installed_version_root(&entry.path(), &state)?;
     }
     Ok(())
 }
@@ -2179,6 +3193,7 @@ fn outcome(
         changed,
         backup,
         details,
+        profile: None,
     }
 }
 
@@ -2191,18 +3206,127 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/z-codex-router")
     }
 
-    fn historical_v1_source_fixture() -> TempDir {
-        let temp = tempfile::tempdir().expect("historical source fixture");
+    fn source_fixture() -> TempDir {
+        let temp = tempfile::tempdir().expect("source fixture");
         let root = temp.path().join("plugins/z-codex-router");
         copy_path(&source_root(), &root).unwrap();
-        for relative in [".codex-plugin/plugin.json", "release/manifest.json"] {
-            let path = root.join(relative);
-            let mut manifest: serde_json::Value =
-                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            manifest["version"] = serde_json::Value::String("1.0.0".into());
-            fs::write(path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
-        }
         temp
+    }
+
+    const LEGACY_V1_PORTABLE: &str = r#"schema_version = 1
+
+[metadata]
+name = "portable-default"
+status = "stable"
+purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
+
+[preflight]
+require_explicit_runtime_metadata = true
+require_exact_route_match = true
+require_platform_capability = true
+on_unknown = "fail-closed"
+on_missing_profile = "fail-closed"
+on_incompatible_profile = "fail-closed"
+on_disabled_candidate = "fail-closed"
+
+[selection]
+stable_profile = "stable/current-gpt-5.6-reference.toml"
+candidate_profiles = ["candidate/example-next-model.toml"]
+allow_candidate_as_default = false
+silent_fallback = false
+"#;
+
+    const LEGACY_V1_COMPATIBILITY: &str = r#"{
+  "schemaVersion": 1,
+  "runtime": {
+    "codexHomeRequired": true,
+    "platforms": ["darwin", "linux", "windows"],
+    "architectures": ["amd64", "arm64"],
+    "requiredProfiles": [
+      "portable/default.toml",
+      "stable/current-gpt-5.6-reference.toml",
+      "candidate/example-next-model.toml"
+    ]
+  },
+  "installer": {
+    "managedBlockProtocol": 1,
+    "configToml": "untouched-1.0.0",
+    "failureMode": "closed"
+  }
+}
+"#;
+
+    fn set_release_identity(root: &Path, version: &str) -> String {
+        let payload_sha256 = payload_hash(root).unwrap();
+        let release_path = root.join("release/manifest.json");
+        let mut release: serde_json::Value =
+            serde_json::from_slice(&fs::read(&release_path).unwrap()).unwrap();
+        release["version"] = serde_json::Value::String(version.into());
+        release["payloadSha256"] = serde_json::Value::String(payload_sha256.clone());
+        fs::write(&release_path, serde_json::to_vec_pretty(&release).unwrap()).unwrap();
+        let plugin_path = root.join(".codex-plugin/plugin.json");
+        let mut plugin: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plugin_path).unwrap()).unwrap();
+        plugin["version"] = serde_json::Value::String(version.into());
+        fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
+        payload_sha256
+    }
+
+    fn legacy_v1_0_1_fixture() -> TempDir {
+        let temp = source_fixture();
+        let root = temp.path().join("plugins/z-codex-router");
+        fs::write(
+            root.join("profiles/portable/default.toml"),
+            LEGACY_V1_PORTABLE,
+        )
+        .unwrap();
+        fs::write(root.join("compatibility.json"), LEGACY_V1_COMPATIBILITY).unwrap();
+        set_release_identity(&root, "1.0.1");
+        temp
+    }
+
+    fn v1_0_2_fixture() -> TempDir {
+        let temp = source_fixture();
+        let root = temp.path().join("plugins/z-codex-router");
+        set_release_identity(&root, "1.0.2");
+        temp
+    }
+
+    fn seed_active_installation(
+        home: &Path,
+        source: &Path,
+        state: State,
+        user_agents_prefix: &str,
+    ) {
+        let version_root = versions_path(home).join(&state.version);
+        for relative in payload_roots() {
+            copy_path(&source.join(relative), &version_root.join(relative)).unwrap();
+        }
+        copy_path(
+            &source.join("release/manifest.json"),
+            &version_root.join("release/manifest.json"),
+        )
+        .unwrap();
+        fs::write(
+            version_root.join("install.json"),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(router_path(home)).unwrap();
+        fs::write(
+            current_path(home),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            agents_path(home),
+            format!(
+                "{user_agents_prefix}{}{block}",
+                state.managed_separator,
+                block = managed_block(&state)
+            ),
+        )
+        .unwrap();
     }
 
     fn fixture() -> TempDir {
@@ -2212,7 +3336,7 @@ mod tests {
     #[test]
     fn managed_block_resolves_codex_home_before_router_state() {
         let state = State {
-            version: "1.0.2".into(),
+            version: "1.0.3".into(),
             payload_sha256: "0".repeat(64),
             installed_at_unix_ns: 0,
             agents_existed_before: false,
@@ -2246,7 +3370,15 @@ mod tests {
             "不重新分类本任务",
             "自动根创建总数仍为 `<=1`",
             "thread、session",
-            "stable profile `stable/current-gpt-5.6-reference.toml` 是本插件的唯一活动 tier 映射",
+            "`stable/current-gpt-5.6-reference.toml` 是安装随附的 shipped default tier mapping",
+            "Persistent user profile override",
+            "ROUTE_HANDOFF_REQUIRED",
+            "ROUTE_CREATE_FAILED",
+            "ROUTE_CREATE_UNAVAILABLE",
+            "严禁 `spawn_agent` fallback",
+            "请为当前相同任务范围创建一个新的 Codex 独立任务",
+            "Create a new independent Codex task for the same current scope",
+            "profile restore <reset 返回的 backup 路径>",
             "在开始领域诊断前就创建精确的",
             "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
             "同一任务最多自动创建一次",
@@ -2323,7 +3455,7 @@ mod tests {
     }
 
     fn run(home: &Path, command: Command, source: bool) -> Result<Outcome> {
-        let source_fixture = source.then(historical_v1_source_fixture);
+        let source_fixture = source.then(source_fixture);
         execute(Options {
             source: source_fixture
                 .as_ref()
@@ -2331,6 +3463,421 @@ mod tests {
             codex_home: Some(home.to_path_buf()),
             command,
         })
+    }
+
+    #[test]
+    fn recognized_v1_0_1_upgrade_replaces_only_the_legacy_contract_and_preserves_user_files() {
+        let temp = fixture();
+        let home = temp.path().join("legacy-upgrade-home");
+        fs::create_dir_all(&home).unwrap();
+        let legacy = legacy_v1_0_1_fixture();
+        let legacy_root = legacy.path().join("plugins/z-codex-router");
+        let legacy_plugin: PluginManifest = serde_json::from_slice(
+            &fs::read(legacy_root.join(".codex-plugin/plugin.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy_plugin.version, "1.0.1");
+        let legacy_state = State {
+            version: "1.0.1".into(),
+            payload_sha256: payload_hash(&legacy_root).unwrap(),
+            installed_at_unix_ns: 1,
+            agents_existed_before: true,
+            managed_separator: "\n".into(),
+        };
+        seed_active_installation(&home, &legacy_root, legacy_state, "# user rule\n");
+        let config_before = "unrelated = \"keep\"\n";
+        fs::write(config_path(&home), config_before).unwrap();
+        let default_mapping = parse_routing_mapping(
+            &fs::read_to_string(
+                source_root().join("profiles/stable/current-gpt-5.6-reference.toml"),
+            )
+            .unwrap(),
+            "E_PROFILE_INCOMPATIBLE",
+        )
+        .unwrap();
+        let override_before = render_user_profile(&default_mapping);
+        fs::write(user_profile_path(&home), &override_before).unwrap();
+
+        let current = source_fixture();
+        let upgraded = execute(Options {
+            source: Some(current.path().join("plugins/z-codex-router")),
+            codex_home: Some(home.clone()),
+            command: Command::Upgrade { dry_run: false },
+        })
+        .unwrap();
+        assert_eq!(upgraded.code, "OK");
+        assert_eq!(upgraded.version.as_deref(), Some("1.0.3"));
+        assert_eq!(
+            fs::read_to_string(config_path(&home)).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            fs::read_to_string(user_profile_path(&home)).unwrap(),
+            override_before
+        );
+        let agents = fs::read_to_string(agents_path(&home)).unwrap();
+        assert!(agents.starts_with("# user rule\n"));
+        assert!(agents.contains("version=1.0.3"));
+        assert_eq!(agents.matches(managed_begin()).count(), 1);
+        let doctor = run(&home, Command::Doctor, false).unwrap();
+        assert_eq!(doctor.code, "OK_ENABLED");
+        assert_eq!(doctor.profile.unwrap().source, "user override");
+    }
+
+    #[test]
+    fn legacy_v1_0_1_profile_drift_stays_closed_and_recovery_keeps_the_old_version_available() {
+        let temp = fixture();
+        let home = temp.path().join("legacy-drift-home");
+        fs::create_dir_all(&home).unwrap();
+        let legacy = legacy_v1_0_1_fixture();
+        let legacy_root = legacy.path().join("plugins/z-codex-router");
+        let state = State {
+            version: "1.0.1".into(),
+            payload_sha256: payload_hash(&legacy_root).unwrap(),
+            installed_at_unix_ns: 1,
+            agents_existed_before: false,
+            managed_separator: String::new(),
+        };
+        seed_active_installation(&home, &legacy_root, state.clone(), "");
+
+        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
+        fs::write(
+            agents_path(&home),
+            agents_before.replace("current.json", "edited-current.json"),
+        )
+        .unwrap();
+        let current = source_fixture();
+        assert_eq!(
+            execute(Options {
+                source: Some(current.path().join("plugins/z-codex-router")),
+                codex_home: Some(home.clone()),
+                command: Command::Upgrade { dry_run: false },
+            })
+            .unwrap_err()
+            .code(),
+            "E_MANAGED_BLOCK_DRIFT"
+        );
+        assert_eq!(read_state(&home).unwrap().unwrap().version, "1.0.1");
+
+        fs::write(
+            versions_path(&home).join("1.0.1/profiles/portable/default.toml"),
+            LEGACY_V1_PORTABLE.replace("on_unknown = \"fail-closed\"", "on_unknown = \"continue\""),
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap_err().code(),
+            "E_LEGACY_PROFILE_INCOMPATIBLE"
+        );
+
+        // Re-seed the trusted legacy fixture, then simulate an interrupted upgrade. Recovery
+        // restores the original exact files and its legacy contract remains verifiable.
+        seed_active_installation(&home, &legacy_root, state, "");
+        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
+        let current_before = fs::read_to_string(current_path(&home)).unwrap();
+        let backup = Backup {
+            agents: Some(agents_before.clone()),
+            current: Some(current_before.clone()),
+        };
+        let backup_path = create_backup(&home, &backup).unwrap();
+        write_journal(
+            &home,
+            "upgrade",
+            &backup_path,
+            Some("partial managed write"),
+            Some("partial state"),
+            None,
+        )
+        .unwrap();
+        fs::write(agents_path(&home), "partial managed write").unwrap();
+        fs::write(current_path(&home), "partial state").unwrap();
+        assert_eq!(
+            run(&home, Command::Recover, false).unwrap().code,
+            "OK_RECOVERED"
+        );
+        assert_eq!(
+            run(&home, Command::Doctor, false)
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("1.0.1")
+        );
+    }
+
+    #[test]
+    fn v1_0_2_upgrade_preserves_safe_auto_and_user_override_bytes() {
+        let temp = fixture();
+        let home = temp.path().join("v1-0-2-upgrade-home");
+        fs::create_dir_all(&home).unwrap();
+        let old = v1_0_2_fixture();
+        let old_root = old.path().join("plugins/z-codex-router");
+        let state = State {
+            version: "1.0.2".into(),
+            payload_sha256: payload_hash(&old_root).unwrap(),
+            installed_at_unix_ns: 1,
+            agents_existed_before: true,
+            managed_separator: "\n".into(),
+        };
+        seed_active_installation(&home, &old_root, state, "# keep this\n");
+        fs::write(config_path(&home), "unrelated = 7\n").unwrap();
+        run(&home, Command::SafeAutoEnable, false).unwrap();
+        run(&home, Command::ProfileInit, false).unwrap();
+        let config_before = fs::read(config_path(&home)).unwrap();
+        let safe_auto_before = fs::read(safe_auto_state_path(&home)).unwrap();
+        let override_before = fs::read(user_profile_path(&home)).unwrap();
+
+        let current = source_fixture();
+        let upgraded = execute(Options {
+            source: Some(current.path().join("plugins/z-codex-router")),
+            codex_home: Some(home.clone()),
+            command: Command::Upgrade { dry_run: false },
+        })
+        .unwrap();
+        assert_eq!(upgraded.version.as_deref(), Some("1.0.3"));
+        assert_eq!(fs::read(config_path(&home)).unwrap(), config_before);
+        assert_eq!(
+            fs::read(safe_auto_state_path(&home)).unwrap(),
+            safe_auto_before
+        );
+        assert_eq!(fs::read(user_profile_path(&home)).unwrap(), override_before);
+        let doctor = run(&home, Command::Doctor, false).unwrap();
+        assert_eq!(doctor.profile.unwrap().source, "user override");
+    }
+
+    #[test]
+    fn persistent_profile_override_lifecycle_is_strict_and_recoverable() {
+        let temp = fixture();
+        let home = temp.path().join("profile-override-home");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        let default = run(&home, Command::ProfileShow, false).unwrap();
+        assert_eq!(default.code, "OK_DEFAULT");
+        assert_eq!(default.profile.unwrap().source, "default");
+
+        let initialized = run(&home, Command::ProfileInit, false).unwrap();
+        assert_eq!(initialized.profile.unwrap().source, "user override");
+        let configured = run(
+            &home,
+            Command::ProfileSet {
+                tier: "C2".into(),
+                model: "gpt-6.0-future".into(),
+                effort: "max".into(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            configured.profile.unwrap().routing["C2"].model,
+            "gpt-6.0-future"
+        );
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileSet {
+                    tier: "A0".into(),
+                    model: "gpt-6.0-future".into(),
+                    effort: "max".into(),
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileSet {
+                    tier: "C1".into(),
+                    model: "gpt-6.0-future".into(),
+                    effort: "ultra".into(),
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileSet {
+                    tier: "Z9".into(),
+                    model: "gpt-6.0-future".into(),
+                    effort: "max".into(),
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+
+        fs::write(
+            user_profile_path(&home),
+            "schema_version = 1\n[routing]\nA0 = { model = \"current-qualified-root\", effort = \"runtime-qualified\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap_err().code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+        fs::write(
+            user_profile_path(&home),
+            "schema_version = 1\nschema_version = 1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Upgrade { dry_run: false }, true,)
+                .unwrap_err()
+                .code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+        assert_eq!(
+            run(&home, Command::ProfileValidate, false)
+                .unwrap_err()
+                .code(),
+            "E_PROFILE_OVERRIDE_INVALID"
+        );
+        let reset = run(&home, Command::ProfileReset, false).unwrap();
+        assert_eq!(reset.code, "OK");
+        let reset_backup = PathBuf::from(reset.backup.as_deref().unwrap());
+        assert!(reset_backup.is_file());
+        assert!(profile_backup_metadata_path(&reset_backup)
+            .unwrap()
+            .is_file());
+        assert!(!user_profile_path(&home).exists());
+        assert_eq!(reset.profile.unwrap().source, "default");
+    }
+
+    #[test]
+    fn profile_restore_is_managed_atomic_and_drift_checked() {
+        let temp = fixture();
+        let home = temp.path().join("profile-restore-home");
+        fs::create_dir_all(&home).unwrap();
+        run(&home, Command::Install, true).unwrap();
+        run(&home, Command::ProfileInit, false).unwrap();
+        run(
+            &home,
+            Command::ProfileSet {
+                tier: "C2".into(),
+                model: "gpt-6.0-future".into(),
+                effort: "max".into(),
+            },
+            false,
+        )
+        .unwrap();
+        let original = fs::read(user_profile_path(&home)).unwrap();
+        let reset = run(&home, Command::ProfileReset, false).unwrap();
+        let backup = PathBuf::from(reset.backup.unwrap());
+        assert!(profile_backup_metadata_path(&backup).unwrap().is_file());
+        let restored = run(
+            &home,
+            Command::ProfileRestore {
+                backup: backup.clone(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(restored.code, "OK");
+        assert_eq!(fs::read(user_profile_path(&home)).unwrap(), original);
+        assert_eq!(restored.profile.unwrap().source, "user override");
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileRestore {
+                    backup: backup.clone(),
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_DRIFT"
+        );
+
+        let reset = run(&home, Command::ProfileReset, false).unwrap();
+        let drifted_backup = PathBuf::from(reset.backup.unwrap());
+        fs::write(&drifted_backup, "# modified after reset\n").unwrap();
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileRestore {
+                    backup: drifted_backup,
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_BACKUP_DRIFT"
+        );
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileRestore {
+                    backup: PathBuf::from("../outside.toml"),
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID"
+        );
+
+        let invalid_backup = user_profile_backup_path(&home).unwrap();
+        write_profile_backup(&invalid_backup, "schema_version = 1\n[routing]\n").unwrap();
+        assert_eq!(
+            run(
+                &home,
+                Command::ProfileRestore {
+                    backup: invalid_backup,
+                },
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            "E_PROFILE_OVERRIDE_BACKUP_INVALID"
+        );
+        assert!(!user_profile_path(&home).exists());
+    }
+
+    #[test]
+    fn installed_plugin_identity_is_optional_for_historical_roots_but_exact_when_present() {
+        let temp = fixture();
+        let home = temp.path().join("legacy-plugin-identity-home");
+        fs::create_dir_all(&home).unwrap();
+        let legacy = legacy_v1_0_1_fixture();
+        let legacy_root = legacy.path().join("plugins/z-codex-router");
+        let state = State {
+            version: "1.0.1".into(),
+            payload_sha256: payload_hash(&legacy_root).unwrap(),
+            installed_at_unix_ns: 1,
+            agents_existed_before: false,
+            managed_separator: String::new(),
+        };
+        seed_active_installation(&home, &legacy_root, state, "");
+        let installed_root = versions_path(&home).join("1.0.1");
+        assert!(!installed_root.join(".codex-plugin/plugin.json").exists());
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap().code,
+            "OK_ENABLED"
+        );
+        copy_path(
+            &legacy_root.join(".codex-plugin/plugin.json"),
+            &installed_root.join(".codex-plugin/plugin.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap().code,
+            "OK_ENABLED"
+        );
+        let plugin_path = installed_root.join(".codex-plugin/plugin.json");
+        let mut plugin: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plugin_path).unwrap()).unwrap();
+        plugin["version"] = serde_json::Value::String("1.0.3".into());
+        fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
+        assert_eq!(
+            run(&home, Command::Doctor, false).unwrap_err().code(),
+            "E_PAYLOAD_DRIFT"
+        );
     }
 
     #[test]
@@ -2386,6 +3933,29 @@ mod tests {
     #[test]
     fn missing_profile_candidate_drift_and_dangerous_paths_are_rejected() {
         let temp = fixture();
+        let mismatched_plugin = temp.path().join("mismatched-plugin-source");
+        copy_path(&source_root(), &mismatched_plugin).unwrap();
+        let plugin_path = mismatched_plugin.join(".codex-plugin/plugin.json");
+        let mut plugin: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plugin_path).unwrap()).unwrap();
+        plugin["version"] = serde_json::Value::String("9.9.9".into());
+        fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
+        assert_eq!(
+            load_source(Some(mismatched_plugin)).unwrap_err().code(),
+            "E_SOURCE_INVALID"
+        );
+        let cachebuster_plugin = temp.path().join("cachebuster-plugin-source");
+        copy_path(&source_root(), &cachebuster_plugin).unwrap();
+        let cachebuster_path = cachebuster_plugin.join(".codex-plugin/plugin.json");
+        let mut cachebuster: serde_json::Value =
+            serde_json::from_slice(&fs::read(&cachebuster_path).unwrap()).unwrap();
+        cachebuster["version"] = serde_json::Value::String("1.0.3+codex.local-test".into());
+        fs::write(
+            &cachebuster_path,
+            serde_json::to_vec_pretty(&cachebuster).unwrap(),
+        )
+        .unwrap();
+        assert!(load_source(Some(cachebuster_plugin)).is_ok());
         let broken = temp.path().join("broken-source");
         copy_path(&source_root(), &broken).unwrap();
         fs::remove_file(broken.join("profiles/portable/default.toml")).unwrap();
@@ -2467,7 +4037,7 @@ mod tests {
         run(&home, Command::Install, true).unwrap();
         let original_agents = fs::read_to_string(agents_path(&home)).unwrap();
         fs::write(
-            versions_path(&home).join("1.0.0/core/router.md"),
+            versions_path(&home).join("1.0.3/core/router.md"),
             "user modification",
         )
         .unwrap();
@@ -2529,37 +4099,29 @@ mod tests {
 
         let newer = temp.path().join("newer-source");
         copy_path(&source_root(), &newer).unwrap();
-        let manifest_path = newer.join("release/manifest.json");
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["version"] = serde_json::Value::String("1.0.1".into());
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
+        set_release_identity(&newer, "1.0.4");
         let upgraded = execute(Options {
             source: Some(newer),
             codex_home: Some(home.clone()),
             command: Command::Upgrade { dry_run: false },
         })
         .unwrap();
-        assert_eq!(upgraded.version.as_deref(), Some("1.0.1"));
+        assert_eq!(upgraded.version.as_deref(), Some("1.0.4"));
         let checked = run(&home, Command::Doctor, false).unwrap();
         assert_eq!(checked.code, "OK_ENABLED");
-        assert_eq!(checked.version.as_deref(), Some("1.0.1"));
+        assert_eq!(checked.version.as_deref(), Some("1.0.4"));
         let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
         assert_eq!(agents.matches(managed_begin()).count(), 1);
-        assert!(agents.contains("version=1.0.1"));
+        assert!(agents.contains("version=1.0.4"));
         fs::write(
             agents_path(&home),
             format!("{agents}\n# User rule added after enable\n"),
         )
         .unwrap();
         let rolled_back = run(&home, Command::Rollback, false).unwrap();
-        assert_eq!(rolled_back.version.as_deref(), Some("1.0.0"));
+        assert_eq!(rolled_back.version.as_deref(), Some("1.0.3"));
         let rolled_back_agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
-        assert!(rolled_back_agents.contains("version=1.0.0"));
+        assert!(rolled_back_agents.contains("version=1.0.3"));
         assert!(rolled_back_agents.contains("# User rule added after enable"));
     }
 
@@ -2594,7 +4156,7 @@ mod tests {
             command: Command::Upgrade { dry_run: false },
         })
         .unwrap();
-        assert_eq!(refreshed.version.as_deref(), Some("1.0.2"));
+        assert_eq!(refreshed.version.as_deref(), Some("1.0.3"));
         assert_eq!(
             read_state(&home).unwrap().unwrap().payload_sha256,
             payload_sha256
@@ -2636,7 +4198,7 @@ mod tests {
         fs::write(current_path(&home), "not valid json").unwrap();
         let restored = run(&home, Command::Recover, false).unwrap();
         assert_eq!(restored.code, "OK_RECOVERED");
-        assert_eq!(restored.version.as_deref(), Some("1.0.0"));
+        assert_eq!(restored.version.as_deref(), Some("1.0.3"));
         assert_eq!(
             fs::read_to_string(agents_path(&home)).unwrap(),
             agents_before
@@ -2695,18 +4257,10 @@ mod tests {
         let current_before = fs::read_to_string(current_path(&home)).unwrap();
         let newer = temp.path().join("newer-source");
         copy_path(&source_root(), &newer).unwrap();
-        let manifest_path = newer.join("release/manifest.json");
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["version"] = serde_json::Value::String("1.0.1".into());
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
+        set_release_identity(&newer, "1.0.4");
         let source = load_source(Some(newer)).unwrap();
         let next = State {
-            version: "1.0.1".into(),
+            version: "1.0.4".into(),
             payload_sha256: source.manifest.payload_sha256.clone(),
             installed_at_unix_ns: now_ns(),
             agents_existed_before: true,
@@ -2729,7 +4283,7 @@ mod tests {
         .unwrap();
         let recovered = run(&home, Command::Recover, false).unwrap();
         assert_eq!(recovered.code, "OK_RECOVERED");
-        assert!(!versions_path(&home).join("1.0.1").exists());
+        assert!(!versions_path(&home).join("1.0.4").exists());
         assert_eq!(
             fs::read_to_string(agents_path(&home)).unwrap(),
             agents_before

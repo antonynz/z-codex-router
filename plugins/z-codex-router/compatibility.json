@@ -16,6 +16,14 @@
       "ordinaryInstallAndRoutingEnable": "untouched",
       "safeAutoApproval": "explicit-opt-in-three-keys"
     },
+    "profileOverride": {
+      "path": "z-codex-router-profile.toml",
+      "precedence": "explicit-user-session-cli>validated-user-override>shipped-default",
+      "invalid": "fail-closed",
+      "runtimeAllowlist": "create-thread-intersection-fail-closed",
+      "reset": "backup-and-remove",
+      "restore": "managed-backup-only-validate-atomic"
+    },
     "failureMode": "closed"
   }
 }

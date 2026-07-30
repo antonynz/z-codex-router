@@ -467,6 +467,7 @@ function Invoke-ZcrInstall {
         $shellPrefix = @("-NoProfile", "-File", $launcher)
         $current = Join-Path $CodexHome "z-codex-router/current.json"
         if (Test-Path -LiteralPath $current -PathType Leaf) {
+            $routerAction = "upgrade"
             Invoke-Checked -FilePath $shellPath -Arguments ($shellPrefix + @(
                 "--codex-home", $CodexHome, "upgrade", "--dry-run"
             ))
@@ -477,6 +478,7 @@ function Invoke-ZcrInstall {
             }
         }
         else {
+            $routerAction = "install"
             Invoke-Checked -FilePath $shellPath -Arguments ($shellPrefix + @(
                 "--codex-home", $CodexHome, "dry-run"
             ))
@@ -502,6 +504,7 @@ function Invoke-ZcrInstall {
             versionReused = $versionReused
             sourceReused = $sourceReused
             downloadedBytes = $downloadedBytes
+            routerAction = $routerAction
             enabled = [bool]$Enable
             previousSource = $(if ($backupRoot) { $backupRoot } else { $null })
             previousVersionSource = $(if ($versionBackup) { $versionBackup } else { $null })

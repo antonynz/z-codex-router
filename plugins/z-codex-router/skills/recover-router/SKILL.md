@@ -22,7 +22,7 @@ description: Safely recover an interrupted Z Codex Router install, enable, upgra
      safe-auto recovery.
 4. If the user explicitly asks to undo a completed enablement or upgrade, run `rollback` only
    after Doctor is healthy. It replaces only the managed block and current pointer, preserving
-   surrounding user-managed `AGENTS.md` content.
+   surrounding user-managed `AGENTS.md` content, Safe Auto state, and persistent profile override.
 
 Stop on any other error, hash drift, or user-content conflict. Do not repair files manually or
 silently invoke rollback.

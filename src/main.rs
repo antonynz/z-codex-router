@@ -30,10 +30,35 @@ enum CliCommand {
     Recover,
     Rollback,
     Uninstall,
+    /// Inspect or manage the persistent user tier-to-model override.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
     /// Explicitly opt in to the safe automatic approval reviewer policy.
     SafeAuto {
         #[command(subcommand)]
         command: SafeAutoCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    /// Show the effective routing mapping and its source.
+    Show,
+    /// Create an editable user override from the shipped active default.
+    Init,
+    /// Validate the effective routing mapping without changing it.
+    Validate,
+    /// Back up and remove the user override so the shipped default is active again.
+    Reset,
+    /// Restore a reset backup from the managed backup directory.
+    Restore { backup: PathBuf },
+    /// Set one tier in a validated persistent user override.
+    Set {
+        tier: String,
+        model: String,
+        effort: String,
     },
 }
 
@@ -61,6 +86,22 @@ fn main() {
         CliCommand::Recover => Command::Recover,
         CliCommand::Rollback => Command::Rollback,
         CliCommand::Uninstall => Command::Uninstall,
+        CliCommand::Profile { command } => match command {
+            ProfileCommand::Show => Command::ProfileShow,
+            ProfileCommand::Init => Command::ProfileInit,
+            ProfileCommand::Validate => Command::ProfileValidate,
+            ProfileCommand::Reset => Command::ProfileReset,
+            ProfileCommand::Restore { backup } => Command::ProfileRestore { backup },
+            ProfileCommand::Set {
+                tier,
+                model,
+                effort,
+            } => Command::ProfileSet {
+                tier,
+                model,
+                effort,
+            },
+        },
         CliCommand::SafeAuto { command } => match command {
             SafeAutoCommand::Enable => Command::SafeAutoEnable,
             SafeAutoCommand::Disable | SafeAutoCommand::Restore => Command::SafeAutoRestore,

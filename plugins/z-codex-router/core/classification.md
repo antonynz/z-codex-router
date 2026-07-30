@@ -8,8 +8,8 @@
 
 ## Profile 分离
 
-本文件和 `router.md` 不包含模型名称。classification 输出的是 tier、mode、理由、风险和验收证据。profile resolver 在兼容性通过后才选择执行面；任何未知或 disabled candidate 都停止，而不是隐式 fallback。
+本文件和 `router.md` 不包含模型名称。classification 输出的是 tier、mode、理由、风险和验收证据。profile resolver 在兼容性通过后才选择执行面；优先级是显式 user/session/CLI 选择 > 已验证的 `<codex_home>/z-codex-router-profile.toml` user override > shipped default。override 无效、未知或 disabled candidate 都停止，而不是隐式 fallback。
 
 ## 例外
 
-当用户明确限定模型、effort、执行面或审批边界时，先验证该要求与 resolved profile、运行时 allowlist、角色权限和环境能力的交集。交集为空即报告 route exception。用户请求不授予发送、签署、支付、发布、账户/权限变更或生产变更的权限。
+当用户明确限定模型、effort、执行面或审批边界时，先验证该要求与 resolved profile、运行时 `create_thread` allowlist、角色权限和环境能力的交集。交集为空即报告 `ROUTE_PROFILE_RUNTIME_UNAVAILABLE` 或 route exception。用户请求不授予发送、签署、支付、发布、账户/权限变更或生产变更的权限。

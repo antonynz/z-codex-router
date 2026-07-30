@@ -5,7 +5,7 @@ description: Enable Z Codex Router's global task-routing policy or handle an exp
 
 # Enable Z Codex Router
 
-Before writing, state the selected Codex home, that the action will read the plugin payload, `AGENTS.md`, and router state, and that it will add only hash-identified managed content. State that routing install/enable does not read or modify `config.toml`; safe automatic approval is a separate explicit opt-in and is never implied. Do not ask the user to use a CLI.
+Before writing, state the selected Codex home, that the action will read the plugin payload, `AGENTS.md`, and router state, and that it will add only hash-identified managed content. State that routing install/enable does not read or modify `config.toml` or any existing `z-codex-router-profile.toml` override; safe automatic approval is a separate explicit opt-in and is never implied. Do not ask the user to use a CLI.
 
 1. Invoke `../../scripts/routerctl.sh dry-run` on macOS/Linux or `../../scripts/routerctl.ps1 dry-run` on Windows. Pass `--codex-home` only when `CODEX_HOME` is set; otherwise let the internal launcher resolve the standard Codex home.
 2. Show the dry-run's planned target and writes. If it reports a conflict, permission error, profile/runtime incompatibility, or unsafe path, stop and report its stable error code. Do not retry around it or alter files manually.

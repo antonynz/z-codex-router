@@ -1,6 +1,6 @@
 {
   "name": "z-codex-router",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A local, fail-closed router policy for Codex tasks.",
   "author": {
     "name": "antonynz"
@@ -27,7 +27,10 @@
       "Recovery",
       "Safe uninstallation",
       "Explicit safe-auto approval opt-in",
-      "Parent-owned route receipts and tri-state runtime verification"
+      "Parent-owned route receipts and tri-state runtime verification",
+      "Versioned legacy upgrade migration",
+      "Persistent validated tier-to-model user overrides",
+      "Desktop-policy-aware independent-root handoff"
     ],
     "websiteURL": "https://github.com/antonynz/z-codex-router",
     "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
@@ -36,6 +39,8 @@
       "Install and enable Z Codex Router globally.",
       "Check my Z Codex Router installation.",
       "Validate a parent-owned route receipt and runtime observability boundary.",
+      "Show or validate my Z Codex Router effective profile mapping; initialize, set, reset, or restore an override only when I explicitly request it, using a managed backup rather than a manual overwrite.",
+      "When desktop policy requires an explicit new task before create_thread, stop with ROUTE_HANDOFF_REQUIRED and return the direct receipt-preserving new-task command; never fall back to spawn_agent.",
       "Only when I explicitly ask, enable, check, or restore Z Codex Router's safe-auto approval policy without widening its sandbox or human-authorization boundary.",
       "Safely recover Z Codex Router after a failed action.",
       "Safely disable and uninstall Z Codex Router."

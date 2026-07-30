@@ -109,11 +109,13 @@ exit /b 0
     $cold = (Invoke-ZcrInstall @arguments | Out-String)
     Assert-Contains $cold '"cacheHit": false'
     Assert-Contains $cold '"enabled": true'
+    Assert-Contains $cold '"routerAction": "install"'
     Assert-Contains $cold '"action": "doctor"'
 
     $hot = (Invoke-ZcrInstall @arguments | Out-String)
     Assert-Contains $hot '"cacheHit": true'
     Assert-Contains $hot '"sourceReused": true'
+    Assert-Contains $hot '"routerAction": "upgrade"'
     Assert-Contains $hot '"code": "OK_NO_CHANGE"'
     Assert-Contains $hot '"action": "doctor"'
 

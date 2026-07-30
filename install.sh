@@ -423,6 +423,7 @@ printf 'ZCR_CACHE_HIT=%s\n' "$CACHE_HIT"
 printf 'ZCR_VERSION_REUSED=%s\n' "$VERSION_REUSED"
 printf 'ZCR_SOURCE_REUSED=%s\n' "$SOURCE_REUSED"
 printf 'ZCR_DOWNLOADED_BYTES=%s\n' "$DOWNLOADED_BYTES"
+printf 'ZCR_ROUTER_ACTION=%s\n' "$ROUTER_ACTION"
 printf 'ZCR_ENABLED=%s\n' "$([ "$ENABLE" -eq 1 ] && printf true || printf false)"
 if [ -n "$BACKUP_ROOT" ]; then
   printf 'ZCR_PREVIOUS_SOURCE=%s\n' "$BACKUP_ROOT"
