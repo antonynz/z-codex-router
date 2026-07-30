@@ -19,63 +19,6 @@ INSTALLER = ROOT / "install.sh"
 ASSET_PREFIX = "z-codex-router"
 PAYLOAD_ROOTS = ("core", "profiles", "agents", "compatibility.json")
 
-# Frozen from the public 1.0.1 / 1.0.2 contracts.  The test never reads a Git
-# tag or the network, so release packaging remains reproducible from a source
-# archive without local tag history.
-LEGACY_V1_0_1_PORTABLE = """schema_version = 1
-
-[metadata]
-name = "portable-default"
-status = "stable"
-purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
-
-[preflight]
-require_explicit_runtime_metadata = true
-require_exact_route_match = true
-require_platform_capability = true
-on_unknown = "fail-closed"
-on_missing_profile = "fail-closed"
-on_incompatible_profile = "fail-closed"
-on_disabled_candidate = "fail-closed"
-
-[selection]
-stable_profile = "stable/current-gpt-5.6-reference.toml"
-candidate_profiles = ["candidate/example-next-model.toml"]
-allow_candidate_as_default = false
-silent_fallback = false
-"""
-LEGACY_V1_0_1_COMPATIBILITY = {
-    "schemaVersion": 1,
-    "runtime": {
-        "codexHomeRequired": True,
-        "platforms": ["darwin", "linux", "windows"],
-        "architectures": ["amd64", "arm64"],
-        "requiredProfiles": [
-            "portable/default.toml",
-            "stable/current-gpt-5.6-reference.toml",
-            "candidate/example-next-model.toml",
-        ],
-    },
-    "installer": {
-        "managedBlockProtocol": 1,
-        "configToml": "untouched-1.0.0",
-        "failureMode": "closed",
-    },
-}
-LEGACY_V1_0_2_COMPATIBILITY = {
-    "schemaVersion": 1,
-    "runtime": LEGACY_V1_0_1_COMPATIBILITY["runtime"],
-    "installer": {
-        "managedBlockProtocol": 1,
-        "configToml": {
-            "ordinaryInstallAndRoutingEnable": "untouched",
-            "safeAutoApproval": "explicit-opt-in-three-keys",
-        },
-        "failureMode": "closed",
-    },
-}
-
-
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -320,149 +263,6 @@ def require_failure(result: subprocess.CompletedProcess[str], marker: str) -> No
     assert marker in result.stderr, result.stderr
 
 
-def managed_block(version: str, payload: str, *, legacy_v1_0_1: bool) -> str:
-    boundary = " agents_existed_before=true separator=one-newline"
-    if legacy_v1_0_1:
-        body = (
-            "For each independent task, first read `z-codex-router/current.json`; then read "
-            "`z-codex-router/versions/<current.version>/core/router.md`, resolve "
-            "`z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read "
-            "one relevant mode. Preserve user authority and fail closed if the profile or runtime "
-            "cannot be verified."
-        )
-    else:
-        body = (
-            "For each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when "
-            "set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. "
-            "Then read `<codex_home>/z-codex-router/current.json`, followed by "
-            "`z-codex-router/versions/<current.version>/core/router.md`, resolve "
-            "`z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one "
-            "relevant mode. Preserve user authority. Runtime metadata is tri-state: exact observable "
-            "fields are verified, visible differences are mismatch and fail closed, and missing fields "
-            "are runtime_observability=unobservable. Route receipt protocol 1 is parent-owned: only the "
-            "real create_thread caller may classify and create it, automatic root creation is at most one, "
-            "child threads do not reclassify or recurse, and thread IDs come only from the tool return."
-        )
-    return (
-        f"<!-- z-codex-router:begin id=z-codex-router version={version} sha256={payload} "
-        f"protocol=1{boundary} -->\n# Z Codex Router (managed)\n{body}\n"
-        "<!-- z-codex-router:end id=z-codex-router -->"
-    )
-
-
-def frozen_user_override() -> bytes:
-    return b'''# Preserve these bytes across router payload upgrades.
-schema_version = 1
-
-[metadata]
-name = "existing-user-override"
-
-[routing]
-A0 = { model = "current-qualified-root", effort = "runtime-qualified" }
-A1 = { model = "gpt-5.6-luna", effort = "high" }
-B0 = { model = "gpt-5.6-luna", effort = "xhigh" }
-B1 = { model = "gpt-5.6-terra", effort = "high" }
-B2 = { model = "gpt-5.6-terra", effort = "xhigh" }
-C1 = { model = "gpt-5.6-sol", effort = "medium" }
-C2 = { model = "gpt-6.0-future", effort = "max" }
-C3 = { model = "gpt-5.6-sol", effort = "max" }
-'''
-
-
-def seed_frozen_old_active_router(home: Path, plugin: Path, version: str) -> tuple[bytes, bytes, bytes]:
-    """Create a frozen historical source identity and its immutable installed projection."""
-    fixture_source = home / f".frozen-{version}-source"
-    shutil.copytree(plugin, fixture_source)
-    portable = fixture_source / "profiles/portable/default.toml"
-    compatibility = fixture_source / "compatibility.json"
-    legacy_v1_0_1 = version == "1.0.1"
-    if legacy_v1_0_1:
-        portable.write_text(LEGACY_V1_0_1_PORTABLE)
-        compatibility.write_text(json.dumps(LEGACY_V1_0_1_COMPATIBILITY, indent=2) + "\n")
-    elif version == "1.0.2":
-        modern_without_override = (
-            portable.read_text().split("\n[profile_override]\n", 1)[0] + "\n"
-        )
-        portable.write_text(modern_without_override)
-        compatibility.write_text(json.dumps(LEGACY_V1_0_2_COMPATIBILITY, indent=2) + "\n")
-    else:
-        raise AssertionError(f"unsupported frozen fixture version: {version}")
-    payload = payload_hash(fixture_source)
-    manifest_path = fixture_source / "release/manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["version"] = version
-    manifest["payloadSha256"] = payload
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    plugin_manifest_path = fixture_source / ".codex-plugin/plugin.json"
-    plugin_manifest = json.loads(plugin_manifest_path.read_text())
-    plugin_manifest["version"] = version
-    plugin_manifest_path.write_text(json.dumps(plugin_manifest, indent=2) + "\n")
-    assert json.loads(manifest_path.read_text())["version"] == version
-    assert json.loads(manifest_path.read_text())["payloadSha256"] == payload
-    assert json.loads(plugin_manifest_path.read_text())["version"] == version
-    version_root = home / "z-codex-router" / "versions" / version
-    for relative in PAYLOAD_ROOTS:
-        source = fixture_source / relative
-        target = version_root / relative
-        if source.is_dir():
-            shutil.copytree(source, target)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-    (version_root / "release").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(manifest_path, version_root / "release/manifest.json")
-    state = {
-        "version": version,
-        "payload_sha256": payload,
-        "installed_at_unix_ns": 1,
-        "agents_existed_before": True,
-        "managed_separator": "\n",
-    }
-    (version_root / "install.json").write_text(json.dumps(state, indent=2) + "\n")
-    installed_manifest = json.loads((version_root / "release/manifest.json").read_text())
-    installed_state = json.loads((version_root / "install.json").read_text())
-    assert installed_state["version"] == installed_manifest["version"] == version
-    assert installed_state["payload_sha256"] == installed_manifest["payloadSha256"] == payload
-    # Historical installers projected only payload roots plus release/install evidence into the
-    # immutable version directory. The source manifest above is deliberately version-synced, but
-    # the installed legacy projection must not pretend it carried a plugin identity file.
-    assert not (version_root / ".codex-plugin" / "plugin.json").exists()
-    current = home / "z-codex-router" / "current.json"
-    current.parent.mkdir(parents=True, exist_ok=True)
-    current.write_text(json.dumps(state, indent=2) + "\n")
-    agents = b"# user-owned AGENTS rule\n" + managed_block(
-        version, payload, legacy_v1_0_1=legacy_v1_0_1
-    ).encode()
-    config = b'''unrelated = "keep"
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
-'''
-    safe_auto = {
-        "protocol": 1,
-        "config_existed_before": True,
-        "original": {
-            "sandbox_mode": None,
-            "approval_policy": None,
-            "approvals_reviewer": None,
-        },
-        "managed": {
-            "sandbox_mode": "workspace-write",
-            "approval_policy": "on-request",
-            "approvals_reviewer": "auto_review",
-        },
-    }
-    (home / "AGENTS.md").write_bytes(agents)
-    (home / "config.toml").write_bytes(config)
-    if version == "1.0.2":
-        (home / "z-codex-router" / "safe-auto.json").write_text(
-            json.dumps(safe_auto, indent=2) + "\n"
-        )
-    override = frozen_user_override()
-    (home / "z-codex-router-profile.toml").write_bytes(override)
-    return agents, config, override
-
-
 def test_platform_mapping() -> None:
     fixtures = [
         ("Darwin", "arm64", "darwin-arm64"),
@@ -551,22 +351,22 @@ def test_synthetic_lifecycle() -> None:
         assert f"{explicit_home.resolve()}|plugin marketplace add" in explicit_log
         assert not decoy_home.exists()
 
-        next_fixture = root / "release-1.0.1"
+        next_fixture = root / "release-1.1.0"
         next_fixture.mkdir()
         build_archive(
-            next_fixture, platform=platform, arch=arch, version="1.0.1"
+            next_fixture, platform=platform, arch=arch, version="1.1.0"
         )
         active_state = root / "codex-home" / "z-codex-router" / "current.json"
         active_state.parent.mkdir(parents=True, exist_ok=True)
         active_state.write_text('{"version":"1.0.0"}\n')
         upgraded = run_installer(
-            root, next_fixture, tools, "--enable", version="1.0.1"
+            root, next_fixture, tools, "--enable", version="1.1.0"
         )
-        assert "ZCR_VERSION=1.0.1" in upgraded.stdout
+        assert "ZCR_VERSION=1.1.0" in upgraded.stdout
         assert "ZCR_ROUTER_ACTION=upgrade" in upgraded.stdout
         assert f"ZCR_SOURCE={source.resolve()}" in upgraded.stdout
         router_calls = (root / "router.log").read_text()
-        assert "fixture-version=1.0.1|--codex-home" in router_calls
+        assert "fixture-version=1.1.0|--codex-home" in router_calls
         assert "upgrade --dry-run" in router_calls
         version_root = (
             root
@@ -574,7 +374,7 @@ def test_synthetic_lifecycle() -> None:
             / "z-codex-router-marketplace-versions"
         )
         assert (version_root / "1.0.0" / f"{platform}-{arch}").is_dir()
-        assert (version_root / "1.0.1" / f"{platform}-{arch}").is_dir()
+        assert (version_root / "1.1.0" / f"{platform}-{arch}").is_dir()
 
 
 def test_negative_paths() -> None:
@@ -710,55 +510,6 @@ def test_native_archive(
             assert actual_source == expected_source
 
 
-def test_native_legacy_upgrade(archive: Path, platform: str, arch: str) -> None:
-    """Run the new packaged launcher against frozen 1.0.1 and 1.0.2 active states."""
-    with tempfile.TemporaryDirectory(prefix="zcr-bootstrap-legacy-native-") as temp:
-        root = Path(temp)
-        fixture = root / "release"
-        fixture.mkdir()
-        copied = fixture / archive.name
-        shutil.copy2(archive, copied)
-        (fixture / "SHA256SUMS").write_text(f"{sha256(copied)}  {copied.name}\n")
-        extracted = root / "archive"
-        with tarfile.open(archive, "r:gz") as packaged:
-            members = packaged.getmembers()
-            for member in members:
-                member_path = Path(member.name)
-                assert not member_path.is_absolute() and ".." not in member_path.parts
-                assert member.isfile() or member.isdir()
-            packaged.extractall(extracted)
-        plugin = extracted / "plugins/z-codex-router"
-        release_version = json.loads((plugin / "release/manifest.json").read_text())["version"]
-        tools = make_fake_tools(root)
-
-        for old_version in ("1.0.1", "1.0.2"):
-            home = root / f"old-{old_version}" / "codex-home"
-            home.mkdir(parents=True)
-            agents_before, config_before, override_before = seed_frozen_old_active_router(
-                home, plugin, old_version
-            )
-            upgraded = run_installer(
-                root,
-                fixture,
-                tools,
-                "--enable",
-                version=release_version,
-                codex_home=home,
-            )
-            assert "ZCR_ROUTER_ACTION=upgrade" in upgraded.stdout
-            state = json.loads((home / "z-codex-router/current.json").read_text())
-            assert state["version"] == release_version
-            agents_after = (home / "AGENTS.md").read_bytes()
-            assert agents_after.startswith(b"# user-owned AGENTS rule\n")
-            assert agents_after != agents_before
-            assert agents_after.count(b"<!-- z-codex-router:begin") == 1
-            assert (home / "config.toml").read_bytes() == config_before
-            assert (home / "z-codex-router-profile.toml").read_bytes() == override_before
-            if old_version == "1.0.2":
-                safe_auto = json.loads((home / "z-codex-router/safe-auto.json").read_text())
-                assert safe_auto["managed"]["approval_policy"] == "on-request"
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path)
@@ -777,7 +528,6 @@ def main() -> None:
         test_native_archive(
             args.archive, args.platform, args.arch, args.real_codex
         )
-        test_native_legacy_upgrade(args.archive, args.platform, args.arch)
     print("POSIX bootstrap fixtures: OK")
 
 

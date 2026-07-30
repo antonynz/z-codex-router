@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.3",
+  "version": "1.0.0",
   "channel": "stable",
-  "payloadSha256": "a5b5d05b66daba3d0e4b6b8fb4300cfc5c1d12dbcd73e29e94f1938614cdb144"
+  "payloadSha256": "56dd0fc2dcfd1587ddaa49297b4b5b72fed59e0d89c965c5791118e558480f1d"
 }

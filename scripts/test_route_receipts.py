@@ -43,7 +43,8 @@ class Decision:
 
 @dataclass(frozen=True)
 class CreatePolicy:
-    state: str  # permitted | requires_explicit_user_task | unavailable
+    # permitted | requires_explicit_user_task | requires_current_turn_request | unavailable
+    state: str
 
 
 @dataclass(frozen=True)
@@ -51,14 +52,6 @@ class Handoff:
     decision: Decision
     creator_invoked: bool
     thread_id: str | None = None
-
-
-def exact_user_prompt(receipt: Receipt) -> str:
-    return (
-        "Create a new independent Codex task for the same current scope using "
-        f"{receipt.requested_model} / {receipt.requested_effort}, carrying forward the current "
-        "route receipt; do not create a sub-agent or a second task."
-    )
 
 
 def exact_user_prompt_zh(receipt: Receipt) -> str:
@@ -92,19 +85,27 @@ def parent_handoff(
     receipt: Receipt,
     policy: CreatePolicy,
     *,
+    durable_managed_request: bool = True,
     create_succeeds: bool = True,
     returned_thread_id: str | None = "thread-from-tool",
     existing_root_created: bool = False,
 ) -> Handoff:
-    """Attempt only policy-permitted create_thread; never spawn_agent/current-root fallback."""
+    """Honor the managed durable request when accepted; never use a fallback topology."""
     if existing_root_created:
         return Handoff(
             Decision("ROUTE_HANDOFF_ALREADY_CREATED", False, "one independent root already exists"),
             False,
         )
     if policy.state == "requires_explicit_user_task":
+        if not durable_managed_request:
+            return Handoff(
+                Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt_zh(receipt)),
+                False,
+            )
+        policy = CreatePolicy("permitted")
+    if policy.state == "requires_current_turn_request":
         return Handoff(
-            Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt(receipt)),
+            Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt_zh(receipt)),
             False,
         )
     if policy.state == "unavailable":
@@ -187,11 +188,20 @@ def main() -> None:
     assert allowed.decision.state == "ROUTE_HANDOFF_CREATED"
     assert allowed.creator_invoked and allowed.thread_id == "thread-1"
 
-    # Desktop policy wins: no attempted tool call, no sub-agent/current-root fallback, and one
-    # exact user action gives the parent a lawful retry boundary.
-    rejected = parent_handoff(receipt, CreatePolicy("requires_explicit_user_task"))
+    # 只要求显式用户任务的 tool rule，会接受完整 v1.0.0 受管请求。
+    # request. Commentary is disclosure and the parent invokes create_thread immediately.
+    durable = parent_handoff(
+        receipt,
+        CreatePolicy("requires_explicit_user_task"),
+        returned_thread_id="thread-durable-request",
+    )
+    assert durable.decision.allowed and durable.creator_invoked
+    assert durable.thread_id == "thread-durable-request"
+
+    # A stricter current-turn-only policy still wins: no attempted call and one exact user action.
+    rejected = parent_handoff(receipt, CreatePolicy("requires_current_turn_request"))
     assert rejected == Handoff(
-        Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt(receipt)), False
+        Decision("ROUTE_HANDOFF_REQUIRED", False, exact_user_prompt_zh(receipt)), False
     )
     assert "spawn_agent" not in rejected.decision.note
     assert exact_user_prompt_zh(receipt) == (
@@ -201,6 +211,15 @@ def main() -> None:
     follow_up = parent_handoff(receipt, CreatePolicy("permitted"), returned_thread_id="thread-follow-up")
     assert follow_up.decision.allowed and follow_up.creator_invoked
     assert follow_up.thread_id == "thread-follow-up"  # same receipt/scope/tuple continuity
+
+    # 缺失或发生 drift 的受管请求，连普通显式规则也不能满足。
+    old_or_drifted = parent_handoff(
+        receipt,
+        CreatePolicy("requires_explicit_user_task"),
+        durable_managed_request=False,
+    )
+    assert old_or_drifted.decision.state == "ROUTE_HANDOFF_REQUIRED"
+    assert old_or_drifted.creator_invoked is False
 
     failed = parent_handoff(receipt, CreatePolicy("permitted"), create_succeeds=False)
     assert failed.decision.state == "ROUTE_CREATE_FAILED" and failed.creator_invoked

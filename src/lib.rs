@@ -23,9 +23,9 @@ const USER_PROFILE_BACKUP_DIRECTORY: &str = "z-codex-router-profile-backups";
 pub enum RouterError {
     #[error("{message}")]
     Coded { code: &'static str, message: String },
-    #[error("I/O error: {0}")]
+    #[error("I/O 错误：{0}")]
     Io(#[from] std::io::Error),
-    #[error("JSON error: {0}")]
+    #[error("JSON 错误：{0}")]
     Json(#[from] serde_json::Error),
 }
 
@@ -210,14 +210,6 @@ struct SourceRelease {
     manifest: ReleaseManifest,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InstalledContract {
-    LegacyV1_0_0,
-    LegacyV1_0_1,
-    V1_0_2,
-    Current,
-}
-
 pub fn execute(options: Options) -> Result<Outcome> {
     let home = resolve_home(options.codex_home)?;
     match options.command {
@@ -252,14 +244,14 @@ fn resolve_home(explicit: Option<PathBuf>) -> Result<PathBuf> {
         .ok_or_else(|| {
             RouterError::coded(
                 "E_CODEX_HOME_REQUIRED",
-                "cannot resolve a Codex home; set CODEX_HOME or pass --codex-home",
+                "无法解析 Codex home；请设置 CODEX_HOME 或传入 --codex-home",
             )
         })?;
     let resolved = resolve_path_safely(&home)?;
     if is_dangerous_home(&resolved) {
         return Err(RouterError::coded(
             "E_CODEX_HOME_DANGEROUS",
-            format!("refusing unsafe CODEX_HOME {}", resolved.display()),
+            format!("拒绝不安全的 CODEX_HOME {}", resolved.display()),
         ));
     }
     Ok(resolved)
@@ -272,7 +264,7 @@ fn resolve_path_safely(path: &Path) -> Result<PathBuf> {
     {
         return Err(RouterError::coded(
             "E_PATH_INVALID",
-            "paths containing '..' are not accepted",
+            "不接受包含 '..' 的路径",
         ));
     }
     let absolute = if path.is_absolute() {
@@ -285,11 +277,11 @@ fn resolve_path_safely(path: &Path) -> Result<PathBuf> {
     while !ancestor.exists() {
         let name = ancestor
             .file_name()
-            .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "path has no existing parent"))?;
+            .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "路径没有已存在的父目录"))?;
         suffix.push(name.to_os_string());
         ancestor = ancestor
             .parent()
-            .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "path has no existing parent"))?;
+            .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "路径没有已存在的父目录"))?;
     }
     let mut resolved = fs::canonicalize(ancestor)
         .map_err(|error| RouterError::coded("E_PATH_INVALID", error.to_string()))?;
@@ -308,16 +300,12 @@ fn is_dangerous_home(path: &Path) -> bool {
 }
 
 fn load_source(source: Option<PathBuf>) -> Result<SourceRelease> {
-    let root = source.ok_or_else(|| {
-        RouterError::coded(
-            "E_SOURCE_REQUIRED",
-            "a plugin source is required for this action",
-        )
-    })?;
+    let root = source
+        .ok_or_else(|| RouterError::coded("E_SOURCE_REQUIRED", "此操作需要 plugin source"))?;
     let root = resolve_path_safely(&root)?;
     let manifest_path = root.join("release/manifest.json");
     let bytes = fs::read(&manifest_path)
-        .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "release/manifest.json is missing"))?;
+        .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "缺少 release/manifest.json"))?;
     let manifest: ReleaseManifest = serde_json::from_slice(&bytes)?;
     if manifest.schema_version != 1
         || manifest.channel != "stable"
@@ -325,7 +313,7 @@ fn load_source(source: Option<PathBuf>) -> Result<SourceRelease> {
     {
         return Err(RouterError::coded(
             "E_SOURCE_INVALID",
-            "release manifest must be schema 1, stable, and semantic-versioned",
+            "Release manifest 必须使用 schema 1、stable channel 与语义化版本",
         ));
     }
     validate_source_plugin_identity(&root, &manifest)?;
@@ -334,7 +322,7 @@ fn load_source(source: Option<PathBuf>) -> Result<SourceRelease> {
     if actual != manifest.payload_sha256 {
         return Err(RouterError::coded(
             "E_SOURCE_CHECKSUM",
-            "release payload checksum does not match manifest",
+            "Release payload checksum 与 manifest 不一致",
         ));
     }
     Ok(SourceRelease { root, manifest })
@@ -345,20 +333,15 @@ fn validate_source_plugin_identity(root: &Path, release: &ReleaseManifest) -> Re
         &fs::read(root.join(".codex-plugin/plugin.json")).map_err(|_| {
             RouterError::coded(
                 "E_SOURCE_INVALID",
-                "plugin source is missing .codex-plugin/plugin.json identity evidence",
+                "plugin source 缺少 .codex-plugin/plugin.json 身份证据",
             )
         })?,
     )
-    .map_err(|_| {
-        RouterError::coded(
-            "E_SOURCE_INVALID",
-            "plugin source identity evidence is invalid",
-        )
-    })?;
+    .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "plugin source 身份证据无效"))?;
     if !source_plugin_version_matches_release(&plugin.version, &release.version) {
         return Err(RouterError::coded(
             "E_SOURCE_INVALID",
-            "plugin and release manifests disagree about the source version",
+            "plugin manifest 与 Release manifest 的 source version 不一致",
         ));
     }
     Ok(())
@@ -387,45 +370,12 @@ fn validate_current_payload(root: &Path) -> Result<()> {
     validate_current_compatibility(root)
 }
 
-fn validate_v1_0_2_payload(root: &Path) -> Result<()> {
-    validate_required_payload_files(root, "E_PROFILE_INCOMPATIBLE")?;
-    validate_v1_0_2_profiles(root)?;
-    validate_v1_0_2_compatibility(root)
-}
-
-fn validate_legacy_v1_payload(root: &Path) -> Result<()> {
-    validate_required_payload_files(root, "E_LEGACY_PROFILE_INCOMPATIBLE")?;
-    validate_legacy_v1_profiles(root)?;
-    let compatibility: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("compatibility.json")).map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy payload is missing compatibility.json",
-            )
-        })?)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy compatibility metadata is invalid",
-            )
-        })?;
-    if compatibility["installer"]["managedBlockProtocol"] != 1
-        || compatibility["installer"]["configToml"] != "untouched-1.0.0"
-    {
-        return Err(RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            "recognized legacy compatibility metadata does not match the 1.0.x contract",
-        ));
-    }
-    validate_platform_compatibility(&compatibility, "E_LEGACY_PROFILE_INCOMPATIBLE")
-}
-
 fn validate_required_payload_files(root: &Path, code: &'static str) -> Result<()> {
     for relative in required_payload_paths() {
         if !root.join(relative).is_file() {
             return Err(RouterError::coded(
                 code,
-                format!("required payload file is missing: {relative}"),
+                format!("缺少必需的 payload 文件：{relative}"),
             ));
         }
     }
@@ -441,7 +391,7 @@ fn validate_current_compatibility(root: &Path) -> Result<()> {
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "compatibility metadata does not describe the safe-auto config boundary",
+            "compatibility metadata 未描述 Safe Auto config 边界",
         ));
     }
     let profile_override = &compatibility["installer"]["profileOverride"];
@@ -455,33 +405,21 @@ fn validate_current_compatibility(root: &Path) -> Result<()> {
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "compatibility metadata does not describe the persistent profile override boundary",
+            "compatibility metadata 未描述持久 profile override 边界",
         ));
     }
-    validate_platform_compatibility(&compatibility, "E_PROFILE_INCOMPATIBLE")
-}
-
-fn validate_v1_0_2_compatibility(root: &Path) -> Result<()> {
-    let compatibility: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("compatibility.json")).map_err(|_| {
-            RouterError::coded(
-                "E_PROFILE_INCOMPATIBLE",
-                "recognized 1.0.2 payload is missing compatibility.json",
-            )
-        })?)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_PROFILE_INCOMPATIBLE",
-                "recognized 1.0.2 compatibility metadata is invalid",
-            )
-        })?;
-    let config_contract = &compatibility["installer"]["configToml"];
-    if config_contract["ordinaryInstallAndRoutingEnable"] != "untouched"
-        || config_contract["safeAutoApproval"] != "explicit-opt-in-three-keys"
+    let independent_root_authorization =
+        &compatibility["installer"]["independentRootAuthorization"];
+    if independent_root_authorization["source"]
+        != "explicit-install-enable-or-upgrade-managed-block"
+        || independent_root_authorization["scope"] != "one-per-task-exact-route"
+        || independent_root_authorization["repeatConfirmation"]
+            != "not-required-when-host-accepts-durable-request"
+        || independent_root_authorization["policyConflict"] != "route-handoff-required"
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "recognized 1.0.2 compatibility metadata is incompatible",
+            "compatibility metadata 未描述独立根授权边界",
         ));
     }
     validate_platform_compatibility(&compatibility, "E_PROFILE_INCOMPATIBLE")
@@ -499,10 +437,7 @@ fn validate_platform_compatibility(
                 .any(|item| item.as_str() == Some(profile_platform()))
         });
     if !supported {
-        return Err(RouterError::coded(
-            code,
-            "current platform is not declared compatible",
-        ));
+        return Err(RouterError::coded(code, "当前 platform 未声明为兼容"));
     }
     let supported_architecture = compatibility["runtime"]["architectures"]
         .as_array()
@@ -512,10 +447,7 @@ fn validate_platform_compatibility(
                 .any(|item| item.as_str() == Some(profile_architecture()))
         });
     if !supported_architecture {
-        return Err(RouterError::coded(
-            code,
-            "current architecture is not declared compatible",
-        ));
+        return Err(RouterError::coded(code, "当前 architecture 未声明为兼容"));
     }
     Ok(())
 }
@@ -552,14 +484,10 @@ fn required_payload_paths() -> [&'static str; 26] {
 }
 
 fn validate_profiles(root: &Path) -> Result<()> {
-    validate_modern_profiles(root, true)
+    validate_modern_profiles(root)
 }
 
-fn validate_v1_0_2_profiles(root: &Path) -> Result<()> {
-    validate_modern_profiles(root, false)
-}
-
-fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Result<()> {
+fn validate_modern_profiles(root: &Path) -> Result<()> {
     let schema: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("profiles/schema.json"))?)?;
     let schema_required = schema["required"].as_array().is_some_and(|items| {
@@ -570,7 +498,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     if !schema_required || schema["properties"]["schema_version"]["const"] != 1 {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "profile schema is invalid",
+            "profile schema 无效",
         ));
     }
     let portable = parse_profile(&root.join("profiles/portable/default.toml"))?;
@@ -580,7 +508,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
         if profile.get("schema_version").and_then(Item::as_integer) != Some(1) {
             return Err(RouterError::coded(
                 "E_PROFILE_INCOMPATIBLE",
-                "profile schema_version must equal 1",
+                "profile schema_version 必须等于 1",
             ));
         }
     }
@@ -605,7 +533,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "portable profile does not declare tri-state runtime preflight",
+            "portable profile 未声明三态 runtime preflight",
         ));
     }
     if preflight.get("on_unknown").and_then(Item::as_str) != Some("receipt-aware")
@@ -619,7 +547,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "portable profile does not fail closed for invalid policy inputs",
+            "portable profile 对无效 policy 输入未 fail closed",
         ));
     }
 
@@ -640,7 +568,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "portable profile receipt policy is invalid",
+            "portable profile 的 receipt policy 无效",
         ));
     }
     let observability = profile_table(&portable, "observability")?;
@@ -656,7 +584,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
         if observability.get(key).and_then(Item::as_str) != Some(expected) {
             return Err(RouterError::coded(
                 "E_PROFILE_INCOMPATIBLE",
-                "portable profile observability policy is invalid",
+                "portable profile 的 observability policy 无效",
             ));
         }
     }
@@ -671,7 +599,7 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     if !states {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "portable profile observability states are incomplete",
+            "portable profile 的 observability states 不完整",
         ));
     }
     let selection = profile_table(&portable, "selection")?;
@@ -693,43 +621,57 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "portable profile selection is invalid",
+            "portable profile selection 无效",
         ));
     }
-    if require_profile_override {
-        let override_policy = profile_table(&portable, "profile_override")?;
-        let precedence = override_policy
-            .get("precedence")
-            .and_then(Item::as_array)
-            .is_some_and(|items| {
-                items.iter().map(|item| item.as_str()).eq([
-                    Some("explicit-user-session-cli"),
-                    Some("validated-user-override"),
-                    Some("shipped-default"),
-                ])
-            });
-        if override_policy.get("user_path").and_then(Item::as_str) != Some(USER_PROFILE_FILE)
-            || !precedence
-            || override_policy.get("invalid").and_then(Item::as_str) != Some("fail-closed")
-            || override_policy
-                .get("runtime_allowlist")
-                .and_then(Item::as_str)
-                != Some("create-thread-intersection-fail-closed")
-            || override_policy.get("restore").and_then(Item::as_str)
-                != Some("managed-backup-only-validate-atomic")
-        {
-            return Err(RouterError::coded(
-                "E_PROFILE_INCOMPATIBLE",
-                "portable profile does not declare the persistent override boundary",
-            ));
-        }
+    let override_policy = profile_table(&portable, "profile_override")?;
+    let precedence = override_policy
+        .get("precedence")
+        .and_then(Item::as_array)
+        .is_some_and(|items| {
+            items.iter().map(|item| item.as_str()).eq([
+                Some("explicit-user-session-cli"),
+                Some("validated-user-override"),
+                Some("shipped-default"),
+            ])
+        });
+    if override_policy.get("user_path").and_then(Item::as_str) != Some(USER_PROFILE_FILE)
+        || !precedence
+        || override_policy.get("invalid").and_then(Item::as_str) != Some("fail-closed")
+        || override_policy
+            .get("runtime_allowlist")
+            .and_then(Item::as_str)
+            != Some("create-thread-intersection-fail-closed")
+        || override_policy.get("restore").and_then(Item::as_str)
+            != Some("managed-backup-only-validate-atomic")
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile 未声明持久 override 边界",
+        ));
+    }
+    let authorization = profile_table(&portable, "independent_root_authorization")?;
+    if authorization.get("source").and_then(Item::as_str)
+        != Some("explicit-install-enable-or-upgrade-managed-block")
+        || authorization.get("scope").and_then(Item::as_str) != Some("one-per-task-exact-route")
+        || authorization
+            .get("repeat_confirmation")
+            .and_then(Item::as_str)
+            != Some("not-required-when-host-accepts-durable-request")
+        || authorization.get("policy_conflict").and_then(Item::as_str)
+            != Some("route-handoff-required")
+    {
+        return Err(RouterError::coded(
+            "E_PROFILE_INCOMPATIBLE",
+            "portable profile 未声明独立根授权边界",
+        ));
     }
 
     let stable_metadata = profile_table(&stable, "metadata")?;
     if stable_metadata.get("status").and_then(Item::as_str) != Some("reference") {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "stable reference profile status is invalid",
+            "stable reference profile 状态无效",
         ));
     }
     require_routing(&stable, &["A0", "A1", "B0", "B1", "B2", "C1", "C2", "C3"])?;
@@ -744,158 +686,10 @@ fn validate_modern_profiles(root: &Path, require_profile_override: bool) -> Resu
     {
         return Err(RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            "candidate profile must stay disabled and unevaluated",
+            "candidate profile 必须保持 disabled 且 unevaluated",
         ));
     }
     require_routing(&candidate, &["B2", "C1"])?;
-    Ok(())
-}
-
-fn validate_legacy_v1_profiles(root: &Path) -> Result<()> {
-    let schema: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("profiles/schema.json")).map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy payload is missing its profile schema",
-            )
-        })?)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy profile schema is invalid",
-            )
-        })?;
-    let schema_required = schema["required"].as_array().is_some_and(|items| {
-        ["schema_version", "metadata", "compatibility", "routing"]
-            .iter()
-            .all(|key| items.iter().any(|item| item.as_str() == Some(key)))
-    });
-    if !schema_required || schema["properties"]["schema_version"]["const"] != 1 {
-        return Err(RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            "recognized legacy profile schema does not match the 1.0.x contract",
-        ));
-    }
-    let portable = parse_legacy_profile(&root.join("profiles/portable/default.toml"))?;
-    let stable =
-        parse_legacy_profile(&root.join("profiles/stable/current-gpt-5.6-reference.toml"))?;
-    let candidate = parse_legacy_profile(&root.join("profiles/candidate/example-next-model.toml"))?;
-    for profile in [&portable, &stable, &candidate] {
-        if profile.get("schema_version").and_then(Item::as_integer) != Some(1) {
-            return Err(RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy profile schema_version must equal 1",
-            ));
-        }
-    }
-    let preflight = legacy_profile_table(&portable, "preflight")?;
-    for key in [
-        "require_explicit_runtime_metadata",
-        "require_exact_route_match",
-        "require_platform_capability",
-    ] {
-        if preflight.get(key).and_then(Item::as_bool) != Some(true) {
-            return Err(RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy portable preflight has changed",
-            ));
-        }
-    }
-    for key in [
-        "on_unknown",
-        "on_missing_profile",
-        "on_incompatible_profile",
-        "on_disabled_candidate",
-    ] {
-        if preflight.get(key).and_then(Item::as_str) != Some("fail-closed") {
-            return Err(RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                "recognized legacy portable profile no longer fails closed",
-            ));
-        }
-    }
-    let selection = legacy_profile_table(&portable, "selection")?;
-    if selection.get("stable_profile").and_then(Item::as_str)
-        != Some("stable/current-gpt-5.6-reference.toml")
-        || selection
-            .get("allow_candidate_as_default")
-            .and_then(Item::as_bool)
-            != Some(false)
-        || selection.get("silent_fallback").and_then(Item::as_bool) != Some(false)
-    {
-        return Err(RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            "recognized legacy profile selection has changed",
-        ));
-    }
-    if legacy_profile_table(&stable, "metadata")?
-        .get("status")
-        .and_then(Item::as_str)
-        != Some("reference")
-    {
-        return Err(RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            "recognized legacy stable profile is not a reference",
-        ));
-    }
-    require_legacy_routing(&stable, &TIER_NAMES)?;
-    let candidate_metadata = legacy_profile_table(&candidate, "metadata")?;
-    if candidate_metadata.get("status").and_then(Item::as_str) != Some("disabled")
-        || candidate_metadata.get("enabled").and_then(Item::as_bool) != Some(false)
-        || candidate_metadata
-            .get("evaluation_state")
-            .and_then(Item::as_str)
-            != Some("unevaluated")
-    {
-        return Err(RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            "recognized legacy candidate profile has changed",
-        ));
-    }
-    require_legacy_routing(&candidate, &["B2", "C1"])
-}
-
-fn parse_legacy_profile(path: &Path) -> Result<DocumentMut> {
-    fs::read_to_string(path)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                format!("recognized legacy profile is missing: {}", path.display()),
-            )
-        })?
-        .parse::<DocumentMut>()
-        .map_err(|_| {
-            RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                format!("recognized legacy profile is invalid: {}", path.display()),
-            )
-        })
-}
-
-fn legacy_profile_table<'a>(profile: &'a DocumentMut, name: &str) -> Result<&'a Table> {
-    profile.get(name).and_then(Item::as_table).ok_or_else(|| {
-        RouterError::coded(
-            "E_LEGACY_PROFILE_INCOMPATIBLE",
-            format!("recognized legacy profile table {name} is missing"),
-        )
-    })
-}
-
-fn require_legacy_routing(profile: &DocumentMut, tiers: &[&str]) -> Result<()> {
-    let routing = legacy_profile_table(profile, "routing")?;
-    for tier in tiers {
-        let entry = routing.get(tier).and_then(Item::as_inline_table);
-        let valid = entry.is_some_and(|table| {
-            table.get("model").and_then(|item| item.as_str()).is_some()
-                && table.get("effort").and_then(|item| item.as_str()).is_some()
-        });
-        if !valid {
-            return Err(RouterError::coded(
-                "E_LEGACY_PROFILE_INCOMPATIBLE",
-                format!("recognized legacy routing entry {tier} is incomplete"),
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -909,7 +703,7 @@ fn profile_table<'a>(profile: &'a DocumentMut, name: &str) -> Result<&'a Table> 
     profile.get(name).and_then(Item::as_table).ok_or_else(|| {
         RouterError::coded(
             "E_PROFILE_INCOMPATIBLE",
-            format!("profile table {name} is missing"),
+            format!("缺少 profile table {name}"),
         )
     })
 }
@@ -925,7 +719,7 @@ fn require_routing(profile: &DocumentMut, tiers: &[&str]) -> Result<()> {
         if !valid {
             return Err(RouterError::coded(
                 "E_PROFILE_INCOMPATIBLE",
-                format!("profile routing entry {tier} is incomplete"),
+                format!("profile routing entry {tier} 不完整"),
             ));
         }
     }
@@ -969,9 +763,9 @@ fn payload_hash(root: &Path) -> Result<String> {
     }
     let mut hasher = Sha256::new();
     for file in files {
-        let relative = file.strip_prefix(root).map_err(|_| {
-            RouterError::coded("E_SOURCE_INVALID", "payload path escapes source root")
-        })?;
+        let relative = file
+            .strip_prefix(root)
+            .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "payload 路径越出 source root"))?;
         hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
         hasher.update([0]);
         hasher.update(fs::read(file)?);
@@ -980,62 +774,25 @@ fn payload_hash(root: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn installed_contract(state: &State) -> Result<InstalledContract> {
-    match state.version.as_str() {
-        "1.0.0" => Ok(InstalledContract::LegacyV1_0_0),
-        "1.0.1" => Ok(InstalledContract::LegacyV1_0_1),
-        "1.0.2" => Ok(InstalledContract::V1_0_2),
-        _ => {
-            let version = Version::parse(&state.version).map_err(|_| {
-                RouterError::coded("E_STATE_INVALID", "installed version is not semantic")
-            })?;
-            if version < Version::new(1, 0, 2) {
-                return Err(RouterError::coded(
-                    "E_LEGACY_CONTRACT_UNSUPPORTED",
-                    format!(
-                        "installed router {} predates the recognized migration contracts; preserve it and use the documented recovery path",
-                        state.version
-                    ),
-                ));
-            }
-            Ok(InstalledContract::Current)
-        }
-    }
-}
-
 fn validate_installed_version_root(root: &Path, state: &State) -> Result<()> {
-    let installed: State =
-        serde_json::from_slice(&fs::read(root.join("install.json")).map_err(|_| {
-            RouterError::coded(
-                "E_PAYLOAD_DRIFT",
-                "installed version is missing its state evidence",
-            )
-        })?)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_PAYLOAD_DRIFT",
-                "installed version state evidence is invalid",
-            )
-        })?;
+    Version::parse(&state.version)
+        .map_err(|_| RouterError::coded("E_STATE_INVALID", "已安装版本不是语义化版本"))?;
+    let installed: State = serde_json::from_slice(
+        &fs::read(root.join("install.json"))
+            .map_err(|_| RouterError::coded("E_PAYLOAD_DRIFT", "已安装版本缺少 state 证据"))?,
+    )
+    .map_err(|_| RouterError::coded("E_PAYLOAD_DRIFT", "已安装版本的 state 证据无效"))?;
     if installed.version != state.version || installed.payload_sha256 != state.payload_sha256 {
         return Err(RouterError::coded(
             "E_PAYLOAD_DRIFT",
-            "current.json and installed version state evidence disagree",
+            "current.json 与已安装版本的 state 证据不一致",
         ));
     }
     let manifest: ReleaseManifest =
         serde_json::from_slice(&fs::read(root.join("release/manifest.json")).map_err(|_| {
-            RouterError::coded(
-                "E_PAYLOAD_DRIFT",
-                "installed version is missing its release manifest evidence",
-            )
+            RouterError::coded("E_PAYLOAD_DRIFT", "已安装版本缺少 Release manifest 证据")
         })?)
-        .map_err(|_| {
-            RouterError::coded(
-                "E_PAYLOAD_DRIFT",
-                "installed release manifest evidence is invalid",
-            )
-        })?;
+        .map_err(|_| RouterError::coded("E_PAYLOAD_DRIFT", "已安装 Release manifest 证据无效"))?;
     if manifest.schema_version != 1
         || manifest.channel != "stable"
         || manifest.version != state.version
@@ -1043,21 +800,15 @@ fn validate_installed_version_root(root: &Path, state: &State) -> Result<()> {
     {
         return Err(RouterError::coded(
             "E_PAYLOAD_DRIFT",
-            "installed release manifest does not match the active state",
+            "已安装 Release manifest 与活动 state 不一致",
         ));
     }
     validate_optional_installed_plugin_identity(root, state)?;
-    match installed_contract(state)? {
-        InstalledContract::LegacyV1_0_0 | InstalledContract::LegacyV1_0_1 => {
-            validate_legacy_v1_payload(root)?
-        }
-        InstalledContract::V1_0_2 => validate_v1_0_2_payload(root)?,
-        InstalledContract::Current => validate_current_payload(root)?,
-    }
+    validate_current_payload(root)?;
     if payload_hash(root)? != state.payload_sha256 {
         return Err(RouterError::coded(
             "E_PAYLOAD_DRIFT",
-            "installed version payload hash differs from its exact state evidence",
+            "已安装版本的 payload hash 与其精确 state 证据不一致",
         ));
     }
     Ok(())
@@ -1073,19 +824,15 @@ fn validate_optional_installed_plugin_identity(root: &Path, state: &State) -> Re
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(RouterError::coded(
             "E_PAYLOAD_DRIFT",
-            "installed plugin identity evidence is not a regular file",
+            "已安装 plugin 的身份证据不是普通文件",
         ));
     }
-    let plugin: PluginManifest = serde_json::from_slice(&fs::read(&path)?).map_err(|_| {
-        RouterError::coded(
-            "E_PAYLOAD_DRIFT",
-            "installed plugin identity evidence is invalid",
-        )
-    })?;
+    let plugin: PluginManifest = serde_json::from_slice(&fs::read(&path)?)
+        .map_err(|_| RouterError::coded("E_PAYLOAD_DRIFT", "已安装 plugin 的身份证据无效"))?;
     if plugin.version != state.version {
         return Err(RouterError::coded(
             "E_PAYLOAD_DRIFT",
-            "installed plugin identity evidence does not match the active state",
+            "已安装 plugin 的身份证据与活动 state 不一致",
         ));
     }
     Ok(())
@@ -1116,12 +863,10 @@ fn install(
     if let Some(current) = existing_state.as_ref() {
         next_state.agents_existed_before = current.agents_existed_before;
         next_state.managed_separator = current.managed_separator.clone();
-        let current_version = Version::parse(&current.version).map_err(|_| {
-            RouterError::coded("E_STATE_INVALID", "installed version is not semantic")
-        })?;
-        let next_version = Version::parse(&next_state.version).map_err(|_| {
-            RouterError::coded("E_SOURCE_INVALID", "source version is not semantic")
-        })?;
+        let current_version = Version::parse(&current.version)
+            .map_err(|_| RouterError::coded("E_STATE_INVALID", "已安装版本不是语义化版本"))?;
+        let next_version = Version::parse(&next_state.version)
+            .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "source version 不是语义化版本"))?;
         if current.version == next_state.version
             && current.payload_sha256 == next_state.payload_sha256
         {
@@ -1133,12 +878,12 @@ fn install(
                 Some(current.version.clone()),
                 false,
                 None,
-                vec!["same version and managed content already installed".into()],
+                vec!["相同版本和受管内容已安装".into()],
             ));
         } else if !allow_upgrade {
             return Err(RouterError::coded(
                 "E_UPGRADE_REQUIRED",
-                "a different router version is installed; use upgrade",
+                "已安装不同的 router 版本；请使用 upgrade",
             ));
         } else if current.version == next_state.version {
             // A local same-version refresh is allowed only after the active installation is
@@ -1153,7 +898,7 @@ fn install(
             if next_version <= current_version {
                 return Err(RouterError::coded(
                     "E_VERSION_NOT_NEWER",
-                    "source stable release is not newer than installed version",
+                    "source stable Release 不比已安装版本新",
                 ));
             }
         }
@@ -1163,7 +908,7 @@ fn install(
     {
         return Err(RouterError::coded(
             "E_MANAGED_BLOCK_CONFLICT",
-            "AGENTS.md contains an untracked router managed block",
+            "AGENTS.md 包含未跟踪的 router 受管 block",
         ));
     }
 
@@ -1183,9 +928,9 @@ fn install(
             false,
             None,
             vec![
-                format!("would install immutable version under {}", versions_path(home).display()),
-                format!("would atomically update {}", current_path(home).display()),
-                "would append or exactly replace one hashed AGENTS.md block; config.toml is untouched".into(),
+                format!("将把不可变版本安装到 {}", versions_path(home).display()),
+                format!("将原子更新 {}", current_path(home).display()),
+                "将追加或精确替换一个带 hash 的 AGENTS.md block；不修改 config.toml".into(),
             ],
         ));
     }
@@ -1202,7 +947,7 @@ fn install(
         None
     };
     let next_current = String::from_utf8(serde_json::to_vec_pretty(&next_state)?)
-        .map_err(|_| RouterError::coded("E_DATA", "router state cannot be encoded as UTF-8"))?;
+        .map_err(|_| RouterError::coded("E_DATA", "router state 无法编码为 UTF-8"))?;
     let version_existed_before = versions_path(home).join(&next_state.version).exists();
     if let Err(error) = write_journal_with_replaced_version(
         home,
@@ -1245,7 +990,7 @@ fn install(
         Some(next_state.version),
         true,
         Some(backup_path.display().to_string()),
-        vec!["stable profile remains selected; disabled candidate was not promoted".into()],
+        vec!["继续选用 stable profile；未提升 disabled candidate".into()],
     ))
 }
 
@@ -1258,13 +1003,13 @@ fn doctor(home: &Path) -> Result<Outcome> {
             SafeAutoStatus::Active => {
                 return Err(RouterError::coded(
                     "E_SAFE_AUTO_ACTIVE",
-                    "safe-auto approval policy is active without an installed router; run `safe-auto restore` before cleanup",
+                    "未安装 router，但 Safe Auto 审批 policy 仍为 active；清理前请运行 `safe-auto restore`",
                 ))
             }
             SafeAutoStatus::Drift => {
                 return Err(RouterError::coded(
                     "E_SAFE_AUTO_DRIFT",
-                    "safe-auto state exists but managed keys changed",
+                    "Safe Auto state 存在，但受管键已改变",
                 ))
             }
             SafeAutoStatus::Absent => {}
@@ -1275,13 +1020,13 @@ fn doctor(home: &Path) -> Result<Outcome> {
         {
             return Err(RouterError::coded(
                 "E_MANAGED_BLOCK_CONFLICT",
-                "AGENTS.md has a router managed block but router state is absent",
+                "AGENTS.md 存在 router 受管 block，但 router state 缺失",
             ));
         }
         if router_path(home).exists() {
             return Err(RouterError::coded(
                 "E_STALE_MANAGED_ASSETS",
-                "router managed assets remain without a current state; run the uninstall skill to clean them",
+                "router 受管资产仍存在，但没有 current state；请运行 uninstall skill 清理",
             ));
         }
         return Ok(outcome(
@@ -1291,8 +1036,7 @@ fn doctor(home: &Path) -> Result<Outcome> {
             false,
             None,
             vec![
-                "no managed routing state is enabled; plugin registration is outside routerctl"
-                    .into(),
+                "未启用受管 routing state；plugin registration 不在 routerctl 的检查范围内".into(),
             ],
         ));
     };
@@ -1305,7 +1049,7 @@ fn doctor(home: &Path) -> Result<Outcome> {
         SafeAutoStatus::Drift => {
             return Err(RouterError::coded(
                 "E_SAFE_AUTO_DRIFT",
-                "safe-auto managed keys changed after enablement; run safe-auto status and restore only after resolving the user edit",
+                "启用后 Safe Auto 受管键发生变化；请运行 safe-auto status，并在解决用户改动后再 restore",
             ))
         }
     };
@@ -1316,7 +1060,7 @@ fn doctor(home: &Path) -> Result<Outcome> {
         Some(state.version),
         false,
         None,
-        vec![format!("managed block, payload hash, profile policy, and runtime platform are valid; {safe_detail}")],
+        vec![format!("受管 block、payload hash、profile policy 与 runtime platform 均有效；{safe_detail}")],
     ),
         profile,
     ))
@@ -1336,7 +1080,7 @@ fn profile_show(home: &Path) -> Result<Outcome> {
             Some(state.version),
             false,
             None,
-            vec!["reported only the effective tier mapping, source, path, and mapping hash".into()],
+            vec!["仅报告有效 tier mapping、source、path 与 mapping hash".into()],
         ),
         profile,
     ))
@@ -1356,7 +1100,7 @@ fn profile_validate(home: &Path) -> Result<Outcome> {
             Some(state.version),
             false,
             None,
-            vec!["effective routing mapping is syntactically and semantically valid; runtime allowlist intersection remains fail-closed at handoff time".into()],
+            vec!["有效 routing mapping 的语法和语义均有效；handoff 时 runtime allowlist 交集仍 fail closed".into()],
         ),
         profile,
     ))
@@ -1369,7 +1113,7 @@ fn profile_init(home: &Path) -> Result<Outcome> {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_EXISTS",
             format!(
-                "a user override already exists at {}; run `profile validate`, `profile set`, or explicit `profile reset`",
+                "{} 已存在 user override；请运行 `profile validate`、`profile set` 或显式 `profile reset`",
                 user_profile_path(home).display()
             ),
         ));
@@ -1384,9 +1128,7 @@ fn profile_init(home: &Path) -> Result<Outcome> {
             Some(state.version),
             true,
             None,
-            vec![
-                "created a complete editable user override from the shipped active default".into(),
-            ],
+            vec!["已根据随附的活动默认值创建完整、可编辑的 user override".into()],
         ),
         profile,
     ))
@@ -1397,7 +1139,7 @@ fn profile_set(home: &Path, tier: &str, model: &str, effort: &str) -> Result<Out
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_INVALID",
             format!(
-                "unknown tier {tier}; expected one of {}",
+                "未知 tier {tier}；应为以下值之一：{}",
                 TIER_NAMES.join(", ")
             ),
         ));
@@ -1428,7 +1170,7 @@ fn profile_set(home: &Path, tier: &str, model: &str, effort: &str) -> Result<Out
             true,
             None,
             vec![format!(
-                "updated {tier} and wrote a complete validated user override"
+                "已更新 {tier} 并写入完整、经过验证的 user override"
             )],
         ),
         profile,
@@ -1446,7 +1188,7 @@ fn profile_reset(home: &Path) -> Result<Outcome> {
                 Some(state.version),
                 false,
                 None,
-                vec!["no user override exists; the shipped default remains active".into()],
+                vec!["不存在 user override；随附默认值保持 active".into()],
             ),
             profile,
         ));
@@ -1456,7 +1198,7 @@ fn profile_reset(home: &Path) -> Result<Outcome> {
     if read_user_profile(home)?.as_deref() != Some(previous.as_str()) {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_DRIFT",
-            "user override changed while preparing reset; its backup was retained and no override was removed",
+            "准备 reset 时 user override 已改变；已保留 backup，未移除 override",
         ));
     }
     fs::remove_file(user_profile_path(home))?;
@@ -1468,10 +1210,7 @@ fn profile_reset(home: &Path) -> Result<Outcome> {
             Some(state.version),
             true,
             Some(backups.display().to_string()),
-            vec![
-                "backed up and removed the user override; the shipped default is active again"
-                    .into(),
-            ],
+            vec!["已备份并移除 user override；随附默认值重新 active".into()],
         ),
         profile,
     ))
@@ -1484,32 +1223,32 @@ fn profile_restore(home: &Path, requested_backup: &Path) -> Result<Outcome> {
     let metadata_file = fs::symlink_metadata(&metadata_path).map_err(|_| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile backup is missing its managed integrity metadata",
+            "profile backup 缺少受管完整性 metadata",
         )
     })?;
     if metadata_file.file_type().is_symlink() || !metadata_file.is_file() {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile backup integrity metadata must be a regular managed file",
+            "profile backup 完整性 metadata 必须是受管普通文件",
         ));
     }
     let metadata: ProfileBackup =
         serde_json::from_slice(&fs::read(&metadata_path).map_err(|_| {
             RouterError::coded(
                 "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-                "profile backup is missing its managed integrity metadata",
+                "profile backup 缺少受管完整性 metadata",
             )
         })?)
         .map_err(|_| {
             RouterError::coded(
                 "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-                "profile backup integrity metadata is invalid",
+                "profile backup 完整性 metadata 无效",
             )
         })?;
     let contents = fs::read_to_string(&backup).map_err(|_| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile backup is not valid UTF-8 TOML",
+            "profile backup 不是有效的 UTF-8 TOML",
         )
     })?;
     if metadata.protocol != PROTOCOL
@@ -1517,19 +1256,19 @@ fn profile_restore(home: &Path, requested_backup: &Path) -> Result<Outcome> {
     {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_DRIFT",
-            "profile backup bytes do not match their managed integrity metadata",
+            "profile backup bytes 与其受管完整性 metadata 不一致",
         ));
     }
     if let Err(error) = parse_user_profile_mapping(&contents) {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            format!("profile backup does not contain a valid override: {error}"),
+            format!("profile backup 不包含有效 override：{error}"),
         ));
     }
     if read_user_profile(home)?.is_some() {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_DRIFT",
-            "a user override exists; refusing to overwrite it during profile restore",
+            "user override 已存在；profile restore 拒绝覆盖",
         ));
     }
     write_user_profile_if_unchanged(home, None, &contents)?;
@@ -1541,9 +1280,7 @@ fn profile_restore(home: &Path, requested_backup: &Path) -> Result<Outcome> {
             Some(state.version),
             true,
             Some(backup.display().to_string()),
-            vec![
-                "validated and atomically restored the managed profile backup without overwriting an existing user override".into(),
-            ],
+            vec!["已验证并原子恢复受管 profile backup，未覆盖现有 user override".into()],
         ),
         profile,
     ))
@@ -1553,7 +1290,7 @@ fn active_state(home: &Path) -> Result<State> {
     let state = read_state(home)?.ok_or_else(|| {
         RouterError::coded(
             "E_NOT_INSTALLED",
-            "routing is not enabled; install it before managing the effective profile",
+            "routing 未启用；请先安装，再管理有效 profile",
         )
     })?;
     validate_active_installation(home, &state)?;
@@ -1567,12 +1304,8 @@ fn active_default_mapping(
     let path = versions_path(home)
         .join(&state.version)
         .join("profiles/stable/current-gpt-5.6-reference.toml");
-    let contents = fs::read_to_string(&path).map_err(|_| {
-        RouterError::coded(
-            "E_PROFILE_INCOMPATIBLE",
-            "active default tier mapping is missing",
-        )
-    })?;
+    let contents = fs::read_to_string(&path)
+        .map_err(|_| RouterError::coded("E_PROFILE_INCOMPATIBLE", "缺少活动默认 tier mapping"))?;
     let mapping = parse_routing_mapping(&contents, "E_PROFILE_INCOMPATIBLE")?;
     Ok((path, mapping))
 }
@@ -1599,22 +1332,22 @@ fn parse_user_profile_mapping(contents: &str) -> Result<BTreeMap<String, Route>>
     let document = contents.parse::<DocumentMut>().map_err(|error| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_INVALID",
-            format!("user override TOML is invalid: {error}; repair it or run `profile reset`"),
+            format!("user override TOML 无效：{error}；请修复或运行 `profile reset`"),
         )
     })?;
     if document.get("schema_version").and_then(Item::as_integer) != Some(1) {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_INVALID",
-            "user override schema_version must equal 1; repair it or run `profile reset`",
+            "user override schema_version 必须等于 1；请修复或运行 `profile reset`",
         ));
     }
     routing_mapping_from_document(&document, "E_PROFILE_OVERRIDE_INVALID")
 }
 
 fn parse_routing_mapping(contents: &str, code: &'static str) -> Result<BTreeMap<String, Route>> {
-    let document = contents.parse::<DocumentMut>().map_err(|error| {
-        RouterError::coded(code, format!("tier mapping TOML is invalid: {error}"))
-    })?;
+    let document = contents
+        .parse::<DocumentMut>()
+        .map_err(|error| RouterError::coded(code, format!("tier mapping TOML 无效：{error}")))?;
     routing_mapping_from_document(&document, code)
 }
 
@@ -1625,12 +1358,12 @@ fn routing_mapping_from_document(
     let routing = document
         .get("routing")
         .and_then(Item::as_table)
-        .ok_or_else(|| RouterError::coded(code, "tier mapping [routing] table is missing"))?;
+        .ok_or_else(|| RouterError::coded(code, "缺少 tier mapping 的 [routing] table"))?;
     for (tier, _) in routing.iter() {
         if !TIER_NAMES.contains(&tier) {
             return Err(RouterError::coded(
                 code,
-                format!("tier mapping has unknown tier {tier}"),
+                format!("tier mapping 包含未知 tier {tier}"),
             ));
         }
     }
@@ -1639,25 +1372,21 @@ fn routing_mapping_from_document(
         let entry = routing
             .get(tier)
             .and_then(Item::as_inline_table)
-            .ok_or_else(|| RouterError::coded(code, format!("tier mapping is missing {tier}")))?;
+            .ok_or_else(|| RouterError::coded(code, format!("tier mapping 缺少 {tier}")))?;
         if entry.len() != 2 {
             return Err(RouterError::coded(
                 code,
-                format!("tier mapping {tier} must contain only model and effort"),
+                format!("tier mapping {tier} 只能包含 model 和 effort"),
             ));
         }
         let model = entry
             .get("model")
             .and_then(|item| item.as_str())
-            .ok_or_else(|| {
-                RouterError::coded(code, format!("tier mapping {tier} model is missing"))
-            })?;
+            .ok_or_else(|| RouterError::coded(code, format!("tier mapping {tier} 缺少 model")))?;
         let effort = entry
             .get("effort")
             .and_then(|item| item.as_str())
-            .ok_or_else(|| {
-                RouterError::coded(code, format!("tier mapping {tier} effort is missing"))
-            })?;
+            .ok_or_else(|| RouterError::coded(code, format!("tier mapping {tier} 缺少 effort")))?;
         mapping.insert(
             tier.into(),
             Route {
@@ -1676,7 +1405,7 @@ fn validate_routing_mapping(mapping: &BTreeMap<String, Route>, code: &'static st
     {
         return Err(RouterError::coded(
             code,
-            "tier mapping must contain every tier exactly once",
+            "tier mapping 必须恰好包含每个 tier 一次",
         ));
     }
     for tier in TIER_NAMES {
@@ -1684,20 +1413,20 @@ fn validate_routing_mapping(mapping: &BTreeMap<String, Route>, code: &'static st
         if route.model.trim().is_empty() || route.model.chars().any(char::is_whitespace) {
             return Err(RouterError::coded(
                 code,
-                format!("tier mapping {tier} model must be a non-empty token"),
+                format!("tier mapping {tier} 的 model 必须是非空 token"),
             ));
         }
         if route.effort.trim().is_empty() {
             return Err(RouterError::coded(
                 code,
-                format!("tier mapping {tier} effort must be non-empty"),
+                format!("tier mapping {tier} 的 effort 不能为空"),
             ));
         }
         if tier == "A0" {
             if route.model != "current-qualified-root" || route.effort != "runtime-qualified" {
                 return Err(RouterError::coded(
                     code,
-                    "A0 must remain current-qualified-root/runtime-qualified and cannot create a routed root",
+                    "A0 必须保持 current-qualified-root/runtime-qualified，且不得创建 routed root",
                 ));
             }
         } else if route.model == "current-qualified-root"
@@ -1706,7 +1435,7 @@ fn validate_routing_mapping(mapping: &BTreeMap<String, Route>, code: &'static st
             return Err(RouterError::coded(
                 code,
                 format!(
-                    "tier mapping {tier} must use a future-compatible model token and one of medium/high/xhigh/max"
+                    "tier mapping {tier} 必须使用 future-compatible model token，以及 medium/high/xhigh/max 之一"
                 ),
             ));
         }
@@ -1716,7 +1445,7 @@ fn validate_routing_mapping(mapping: &BTreeMap<String, Route>, code: &'static st
 
 fn render_user_profile(mapping: &BTreeMap<String, Route>) -> String {
     let mut output = String::from(
-        "# Persistent Z Codex Router user override.\n# Explicit user/session/CLI selections still take precedence.\n# Runtime create_thread allowlists are intersected at handoff time and fail closed.\nschema_version = 1\n\n[metadata]\nname = \"user-tier-override\"\npurpose = \"Persistent local tier-to-model override outside immutable release payloads.\"\n\n[routing]\n",
+        "# 持久 Z Codex Router user override。\n# 显式 user/session/CLI 选择仍然优先。\n# handoff 时与 runtime create_thread allowlist 求交集，并 fail closed。\nschema_version = 1\n\n[metadata]\nname = \"user-tier-override\"\npurpose = \"不可变 Release payload 之外的持久本地 tier-to-model override。\"\n\n[routing]\n",
     );
     for tier in TIER_NAMES {
         let route = mapping.get(tier).expect("complete routing map");
@@ -1753,7 +1482,7 @@ fn read_user_profile(home: &Path) -> Result<Option<String>> {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             Err(RouterError::coded(
                 "E_PROFILE_OVERRIDE_INVALID",
-                "user override path must be a regular file, not a link or directory",
+                "user override 路径必须是普通文件，不能是 link 或目录",
             ))
         }
         Ok(_) => fs::read_to_string(&path).map(Some).map_err(Into::into),
@@ -1775,7 +1504,7 @@ fn write_user_profile_if_unchanged(
     if read_user_profile(home)?.as_deref() != expected_before {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_DRIFT",
-            "user override changed while preparing a write; refusing to overwrite it",
+            "准备写入时 user override 已改变；拒绝覆盖",
         ));
     }
     atomic_write(&user_profile_path(home), contents.as_bytes())
@@ -1788,7 +1517,7 @@ fn user_profile_backup_directory(home: &Path) -> Result<PathBuf> {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(RouterError::coded(
                 "E_PROFILE_OVERRIDE_INVALID",
-                "user override backup directory must be a regular directory",
+                "user override backup 目录必须是普通目录",
             ));
         }
     } else {
@@ -1808,7 +1537,7 @@ fn profile_backup_metadata_path(backup: &Path) -> Result<PathBuf> {
         .ok_or_else(|| {
             RouterError::coded(
                 "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-                "profile backup path has no valid file name",
+                "profile backup 路径没有有效文件名",
             )
         })?;
     Ok(backup.with_file_name(format!("{name}.json")))
@@ -1833,14 +1562,14 @@ fn validated_user_profile_backup_path(home: &Path, requested: &Path) -> Result<P
     {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile restore backup path cannot contain '..'",
+            "profile restore backup 路径不能包含 '..'",
         ));
     }
     let directory = user_profile_backup_directory(home)?;
     let directory_canonical = fs::canonicalize(&directory).map_err(|_| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile backup directory cannot be resolved",
+            "无法解析 profile backup 目录",
         )
     })?;
     let candidate = if requested.is_absolute() {
@@ -1851,19 +1580,19 @@ fn validated_user_profile_backup_path(home: &Path, requested: &Path) -> Result<P
     let metadata = fs::symlink_metadata(&candidate).map_err(|_| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile restore backup does not exist",
+            "profile restore backup 不存在",
         )
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile restore backup must be a regular managed file",
+            "profile restore backup 必须是受管普通文件",
         ));
     }
     let canonical = fs::canonicalize(&candidate).map_err(|_| {
         RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile restore backup cannot be resolved",
+            "无法解析 profile restore backup",
         )
     })?;
     let valid_name = canonical
@@ -1873,7 +1602,7 @@ fn validated_user_profile_backup_path(home: &Path, requested: &Path) -> Result<P
     if canonical.parent() != Some(directory_canonical.as_path()) || !valid_name {
         return Err(RouterError::coded(
             "E_PROFILE_OVERRIDE_BACKUP_INVALID",
-            "profile restore backup escapes the managed backup directory",
+            "profile restore backup 越出受管 backup 目录",
         ));
     }
     Ok(canonical)
@@ -1898,13 +1627,13 @@ fn recover(home: &Path) -> Result<Outcome> {
     let expected_agents = journal.expected_agents_sha256.as_deref().ok_or_else(|| {
         RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "pending transaction lacks safe recovery checks; do not overwrite files manually",
+            "待处理事务缺少安全恢复检查；不要手工覆盖文件",
         )
     })?;
     let expected_current = journal.expected_current_sha256.as_deref().ok_or_else(|| {
         RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "pending transaction lacks safe recovery checks; do not overwrite files manually",
+            "待处理事务缺少安全恢复检查；不要手工覆盖文件",
         )
     })?;
     let agents_now = read_optional(&agents_path(home))?;
@@ -1920,7 +1649,7 @@ fn recover(home: &Path) -> Result<Outcome> {
     ) {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "pending transaction no longer matches its before/after values; preserve files and resolve the conflict",
+            "待处理事务不再匹配 before/after 值；请保留文件并解决冲突",
         ));
     }
     if let (Some(version), Some(payload_sha256)) = (
@@ -1934,7 +1663,7 @@ fn recover(home: &Path) -> Result<Outcome> {
         let version = journal.replaced_version.clone().ok_or_else(|| {
             RouterError::coded(
                 "E_TRANSACTION_PENDING",
-                "replaced version backup has no recoverable version identity",
+                "被替换版本的 backup 没有可恢复的版本身份",
             )
         })?;
         restore_version_backup(home, &backup, &version)?;
@@ -1948,7 +1677,7 @@ fn recover(home: &Path) -> Result<Outcome> {
         restored,
         true,
         Some(backup_path.display().to_string()),
-        vec!["restored the original transaction state after exact before/after checks".into()],
+        vec!["精确检查 before/after 后，已恢复原事务状态".into()],
     ))
 }
 
@@ -1957,7 +1686,7 @@ fn rollback(home: &Path) -> Result<Outcome> {
         return recover(home);
     }
     let current = read_state(home)?
-        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state is absent"))?;
+        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "router state 缺失"))?;
     let agents_before = read_optional(&agents_path(home))?;
     ensure_managed_matches(agents_before.as_deref(), &current)?;
     validate_active_installation(home, &current)?;
@@ -1965,10 +1694,7 @@ fn rollback(home: &Path) -> Result<Outcome> {
     let rollback_backup: Backup = serde_json::from_slice(&fs::read(&rollback_backup_path)?)?;
     let target = match rollback_backup.current.as_deref() {
         Some(text) => Some(serde_json::from_str::<State>(text).map_err(|_| {
-            RouterError::coded(
-                "E_STATE_INVALID",
-                "rollback backup current pointer is invalid",
-            )
+            RouterError::coded("E_STATE_INVALID", "rollback backup 的 current pointer 无效")
         })?),
         None => None,
     };
@@ -2019,7 +1745,7 @@ fn rollback(home: &Path) -> Result<Outcome> {
         restored,
         true,
         Some(rollback_backup_path.display().to_string()),
-        vec!["replaced only the exact managed block and current pointer; user-managed AGENTS.md content was preserved".into()],
+        vec!["仅替换精确受管 block 与 current pointer；已保留用户管理的 AGENTS.md 内容".into()],
     ))
 }
 
@@ -2028,7 +1754,7 @@ fn uninstall(home: &Path) -> Result<Outcome> {
     if safe_auto_state_path(home).exists() || safe_auto_journal_path(home).exists() {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_ACTIVE",
-            "safe-auto approval policy is still managed; run `safe-auto restore` before uninstall",
+            "Safe Auto 审批 policy 仍受管理；uninstall 前请运行 `safe-auto restore`",
         ));
     }
     let Some(state) = read_state(home)? else {
@@ -2039,7 +1765,7 @@ fn uninstall(home: &Path) -> Result<Outcome> {
         {
             return Err(RouterError::coded(
                 "E_MANAGED_BLOCK_CONFLICT",
-                "AGENTS.md has a router managed block but router state is absent",
+                "AGENTS.md 存在 router 受管 block，但 router state 缺失",
             ));
         }
         let changed = cleanup_managed_assets(home)?;
@@ -2049,10 +1775,7 @@ fn uninstall(home: &Path) -> Result<Outcome> {
             None,
             changed,
             None,
-            vec![
-                "global routing was already disabled; no user-managed AGENTS.md content changed"
-                    .into(),
-            ],
+            vec!["全局 routing 已停用；没有改变用户管理的 AGENTS.md 内容".into()],
         ));
     };
     let agents = read_optional(&agents_path(home))?;
@@ -2088,7 +1811,7 @@ fn uninstall(home: &Path) -> Result<Outcome> {
         {
             return Err(RouterError::coded(
                 "E_IO",
-                "AGENTS.md changed while uninstalling; user content was not accepted as verified",
+                "uninstall 期间 AGENTS.md 发生变化；未把用户内容视为已验证",
             ));
         }
         fs::remove_file(journal_path(home))?;
@@ -2116,7 +1839,7 @@ fn uninstall(home: &Path) -> Result<Outcome> {
         Some(state.version),
         true,
         None,
-        vec!["revoked only the matching managed block and state, verified user content, and cleaned router-managed assets".into()],
+        vec!["仅撤销匹配的受管 block 与 state，验证用户内容，并清理 router 受管资产".into()],
     ))
 }
 
@@ -2133,7 +1856,7 @@ fn safe_auto_enable(home: &Path) -> Result<Outcome> {
             None,
             false,
             Some(safe_auto_state_path(home).display().to_string()),
-            vec!["safe-auto approval policy is already active and unchanged".into()],
+            vec!["Safe Auto 审批 policy 已 active 且未改变".into()],
         ));
     }
     let original = snapshot_safe_auto_values(&document)?;
@@ -2158,7 +1881,7 @@ fn safe_auto_enable(home: &Path) -> Result<Outcome> {
     if read_optional(&config_path(home))? != current {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_DRIFT",
-            "config.toml changed while preparing safe-auto enablement; refusing to overwrite it",
+            "准备启用 Safe Auto 时 config.toml 已改变；拒绝覆盖",
         ));
     }
     atomic_write(
@@ -2182,9 +1905,9 @@ fn safe_auto_enable(home: &Path) -> Result<Outcome> {
         true,
         Some(safe_auto_state_path(home).display().to_string()),
         vec![
-            "wrote only sandbox_mode, approval_policy, and approvals_reviewer".into(),
-            "sandbox remains workspace-write; auto-review replaces only the eligible reviewer".into(),
-            "user authorization is still required for Computer Use, credentials, and high-risk or irreversible external actions".into(),
+            "仅写入 sandbox_mode、approval_policy 与 approvals_reviewer".into(),
+            "sandbox 保持 workspace-write；auto-review 只替换符合条件的 reviewer".into(),
+            "Computer Use、凭证以及高风险或外部不可逆动作仍需用户授权".into(),
         ],
     ))
 }
@@ -2199,7 +1922,7 @@ fn safe_auto_restore(home: &Path) -> Result<Outcome> {
             None,
             false,
             None,
-            vec!["safe-auto approval policy is absent; no configuration was changed".into()],
+            vec!["Safe Auto 审批 policy 为 absent；未改变配置".into()],
         ));
     };
     let current = read_optional(&config_path(home))?;
@@ -2217,7 +1940,7 @@ fn safe_auto_restore(home: &Path) -> Result<Outcome> {
     if read_optional(&config_path(home))? != current {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_DRIFT",
-            "config.toml changed while preparing safe-auto restore; refusing to overwrite it",
+            "准备 Safe Auto restore 时 config.toml 已改变；拒绝覆盖",
         ));
     }
     atomic_write(
@@ -2234,9 +1957,8 @@ fn safe_auto_restore(home: &Path) -> Result<Outcome> {
         true,
         None,
         vec![
-            "restored only the three managed keys and preserved unrelated config content".into(),
-            "router uninstall remains separate; restore safe-auto before uninstalling routing"
-                .into(),
+            "仅恢复三个受管键，并保留无关 config 内容".into(),
+            "router uninstall 仍是独立操作；卸载 routing 前请先 restore Safe Auto".into(),
         ],
     ))
 }
@@ -2245,19 +1967,19 @@ fn safe_auto_status(home: &Path) -> Result<Outcome> {
     if safe_auto_journal_path(home).exists() {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_TRANSACTION_PENDING",
-            "safe-auto has an interrupted transaction; run `recover` before another action",
+            "Safe Auto 存在中断事务；执行其他操作前请运行 `recover`",
         ));
     }
     let status = evaluate_safe_auto(home)?;
     let (code, detail) = match status {
-        SafeAutoStatus::Active => ("SAFE_AUTO_ACTIVE", "safe-auto approval policy is active"),
+        SafeAutoStatus::Active => ("SAFE_AUTO_ACTIVE", "Safe Auto 审批 policy 为 active"),
         SafeAutoStatus::Drift => (
             "SAFE_AUTO_DRIFT",
-            "safe-auto state exists but one or more managed keys changed",
+            "Safe Auto state 存在，但一个或多个受管键已改变",
         ),
         SafeAutoStatus::Absent => (
             "SAFE_AUTO_ABSENT",
-            "safe-auto approval policy is not managed; configuration was not changed",
+            "Safe Auto 审批 policy 未受管理；未改变配置",
         ),
     };
     Ok(outcome(
@@ -2280,7 +2002,7 @@ fn safe_auto_doctor(home: &Path) -> Result<Outcome> {
             None,
             false,
             Some(safe_auto_state_path(home).display().to_string()),
-            vec!["managed three-key policy is present and unchanged".into()],
+            vec!["受管三键 policy 存在且未改变".into()],
         )),
         SafeAutoStatus::Absent => Ok(outcome(
             "safe-auto-doctor",
@@ -2288,11 +2010,11 @@ fn safe_auto_doctor(home: &Path) -> Result<Outcome> {
             None,
             false,
             None,
-            vec!["safe-auto is not enabled; no permission configuration is managed".into()],
+            vec!["Safe Auto 未启用；没有受管权限配置".into()],
         )),
         SafeAutoStatus::Drift => Err(RouterError::coded(
             "E_SAFE_AUTO_DRIFT",
-            "safe-auto managed keys changed after enablement; restore is blocked to avoid overwriting user changes",
+            "启用后 Safe Auto 受管键已改变；为避免覆盖用户改动，restore 已阻止",
         )),
     }
 }
@@ -2304,7 +2026,7 @@ fn safe_auto_recover(home: &Path) -> Result<Outcome> {
     if current_hash != journal.before_hash && current_hash != journal.after_hash {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_TRANSACTION_PENDING",
-            "config.toml changed outside the interrupted safe-auto transaction; preserve it and resolve the conflict",
+            "config.toml 在中断的 Safe Auto 事务之外发生变化；请保留并解决冲突",
         ));
     }
     if current_hash == journal.before_hash {
@@ -2321,7 +2043,7 @@ fn safe_auto_recover(home: &Path) -> Result<Outcome> {
             None,
             true,
             None,
-            vec!["the interrupted safe-auto write had not changed config.toml".into()],
+            vec!["中断的 Safe Auto 写入尚未改变 config.toml".into()],
         ));
     }
     if journal.operation == "enable" {
@@ -2338,7 +2060,7 @@ fn safe_auto_recover(home: &Path) -> Result<Outcome> {
         if optional_hash(restored_text.as_deref()) != journal.after_hash {
             return Err(RouterError::coded(
                 "E_SAFE_AUTO_TRANSACTION_PENDING",
-                "safe-auto restored config does not match its journal; preserve config.toml",
+                "Safe Auto 恢复后的 config 与 journal 不一致；请保留 config.toml",
             ));
         }
         // When current_hash == after_hash the config write already completed.  Do not
@@ -2358,7 +2080,7 @@ fn safe_auto_recover(home: &Path) -> Result<Outcome> {
         None,
         true,
         None,
-        vec!["completed the interrupted safe-auto transaction after exact hash checks".into()],
+        vec!["精确检查 hash 后，已完成中断的 Safe Auto 事务".into()],
     ))
 }
 
@@ -2366,7 +2088,7 @@ fn ensure_no_safe_auto_transaction(home: &Path) -> Result<()> {
     if safe_auto_journal_path(home).exists() {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_TRANSACTION_PENDING",
-            "a previous safe-auto transaction requires `recover` before another action",
+            "先前的 Safe Auto 事务要求在执行其他操作前运行 `recover`",
         ));
     }
     Ok(())
@@ -2389,7 +2111,7 @@ fn ensure_safe_auto_active(document: &DocumentMut, state: &SafeAutoState) -> Res
     if state.protocol != PROTOCOL || !config_matches_managed(document, state) {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_DRIFT",
-            "safe-auto managed keys are absent or changed; refusing to overwrite user configuration",
+            "Safe Auto 受管键缺失或已改变；拒绝覆盖用户配置",
         ));
     }
     Ok(())
@@ -2416,7 +2138,7 @@ fn snapshot_safe_auto_values(document: &DocumentMut) -> Result<BTreeMap<String, 
             if item.as_value().is_none() {
                 return Err(RouterError::coded(
                     "E_CONFIG_INVALID",
-                    format!("managed config key {key} must be a scalar TOML value"),
+                    format!("受管 config 键 {key} 必须是 TOML 标量值"),
                 ));
             }
             original.insert(key.into(), Some(item.to_string().trim().into()));
@@ -2438,13 +2160,13 @@ fn restore_safe_auto_document(
                 let parsed = mini.parse::<DocumentMut>().map_err(|error| {
                     RouterError::coded(
                         "E_SAFE_AUTO_STATE_INVALID",
-                        format!("cannot restore original {key}: {error}"),
+                        format!("无法恢复原始 {key}：{error}"),
                     )
                 })?;
                 let item = parsed.get(key).cloned().ok_or_else(|| {
                     RouterError::coded(
                         "E_SAFE_AUTO_STATE_INVALID",
-                        format!("safe-auto state lacks a restorable {key} value"),
+                        format!("Safe Auto state 缺少可恢复的 {key} 值"),
                     )
                 })?;
                 document[key] = item;
@@ -2474,10 +2196,7 @@ fn parse_config(contents: Option<&str>) -> Result<DocumentMut> {
         .unwrap_or_default()
         .parse::<DocumentMut>()
         .map_err(|error| {
-            RouterError::coded(
-                "E_CONFIG_INVALID",
-                format!("config.toml is invalid: {error}"),
-            )
+            RouterError::coded("E_CONFIG_INVALID", format!("config.toml 无效：{error}"))
         })
 }
 
@@ -2485,9 +2204,8 @@ fn read_safe_auto_state(home: &Path) -> Result<Option<SafeAutoState>> {
     let Some(text) = read_optional(&safe_auto_state_path(home))? else {
         return Ok(None);
     };
-    let state: SafeAutoState = serde_json::from_str(&text).map_err(|_| {
-        RouterError::coded("E_SAFE_AUTO_STATE_INVALID", "safe-auto state is invalid")
-    })?;
+    let state: SafeAutoState = serde_json::from_str(&text)
+        .map_err(|_| RouterError::coded("E_SAFE_AUTO_STATE_INVALID", "Safe Auto state 无效"))?;
     if state.protocol != PROTOCOL
         || SAFE_AUTO_KEYS
             .iter()
@@ -2496,29 +2214,25 @@ fn read_safe_auto_state(home: &Path) -> Result<Option<SafeAutoState>> {
     {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_STATE_INVALID",
-            "safe-auto state does not describe the supported three-key policy",
+            "Safe Auto state 未描述受支持的三键 policy",
         ));
     }
     Ok(Some(state))
 }
 
 fn read_safe_auto_journal(home: &Path) -> Result<SafeAutoJournal> {
-    let text = read_optional(&safe_auto_journal_path(home))?.ok_or_else(|| {
-        RouterError::coded(
-            "E_NOT_INSTALLED",
-            "no interrupted safe-auto transaction is present",
-        )
-    })?;
+    let text = read_optional(&safe_auto_journal_path(home))?
+        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "不存在中断的 Safe Auto 事务"))?;
     let journal: SafeAutoJournal = serde_json::from_str(&text).map_err(|_| {
         RouterError::coded(
             "E_SAFE_AUTO_TRANSACTION_PENDING",
-            "safe-auto transaction journal is invalid",
+            "Safe Auto 事务 journal 无效",
         )
     })?;
     if journal.protocol != PROTOCOL || !matches!(journal.operation.as_str(), "enable" | "restore") {
         return Err(RouterError::coded(
             "E_SAFE_AUTO_TRANSACTION_PENDING",
-            "safe-auto transaction journal is unsupported",
+            "不支持该 Safe Auto 事务 journal",
         ));
     }
     Ok(journal)
@@ -2545,7 +2259,7 @@ fn remove_managed(existing: &str, state: &State) -> Result<String> {
     let index = existing.find(&block).ok_or_else(|| {
         RouterError::coded(
             "E_MANAGED_BLOCK_DRIFT",
-            "managed AGENTS.md block is not byte-for-byte intact",
+            "受管 AGENTS.md block 并非逐字节完整",
         )
     })?;
     let mut result = String::with_capacity(existing.len() - block.len());
@@ -2564,13 +2278,13 @@ fn replace_managed(existing: &str, previous: &State, next: &State) -> Result<Str
     let index = existing.find(&old).ok_or_else(|| {
         RouterError::coded(
             "E_MANAGED_BLOCK_DRIFT",
-            "managed AGENTS.md block is not byte-for-byte intact",
+            "受管 AGENTS.md block 并非逐字节完整",
         )
     })?;
     if existing.matches(managed_begin()).count() != 1 {
         return Err(RouterError::coded(
             "E_MANAGED_BLOCK_DRIFT",
-            "AGENTS.md contains multiple managed blocks",
+            "AGENTS.md 包含多个受管 block",
         ));
     }
     let mut replaced =
@@ -2582,8 +2296,8 @@ fn replace_managed(existing: &str, previous: &State, next: &State) -> Result<Str
 }
 
 fn ensure_managed_matches(existing: Option<&str>, state: &State) -> Result<()> {
-    let text = existing
-        .ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "AGENTS.md is missing"))?;
+    let text =
+        existing.ok_or_else(|| RouterError::coded("E_MANAGED_BLOCK_DRIFT", "缺少 AGENTS.md"))?;
     let exact = managed_block(state);
     if text.contains(&exact) && text.matches(managed_begin()).count() == 1 {
         return Ok(());
@@ -2591,12 +2305,12 @@ fn ensure_managed_matches(existing: Option<&str>, state: &State) -> Result<()> {
     if text.contains(managed_begin()) {
         return Err(RouterError::coded(
             "E_MANAGED_BLOCK_DRIFT",
-            "managed AGENTS.md block has changed",
+            "受管 AGENTS.md block 已改变",
         ));
     }
     Err(RouterError::coded(
         "E_MANAGED_BLOCK_DRIFT",
-        "managed AGENTS.md block is absent",
+        "受管 AGENTS.md block 缺失",
     ))
 }
 
@@ -2605,12 +2319,21 @@ fn managed_begin() -> &'static str {
 }
 
 fn managed_block(state: &State) -> String {
-    match state.version.as_str() {
-        "1.0.0" => legacy_v1_0_0_managed_block(state),
-        "1.0.1" => legacy_v1_0_1_managed_block(state),
-        _ => modern_managed_block(state),
-    }
+    modern_managed_block(state)
 }
+
+const GLOBAL_ROUTING_POLICY: &str = r#"## 全局路由
+
+- 对每个新的独立任务，先读取一次 `$CODEX_HOME/routing/router.md`（未设置时 `$CODEX_HOME` 为 `~/.codex`），再读取一个主 mode；确有跨领域需要时最多加一个辅助 mode，按最终交付责任选择主 mode，并指定最终交付负责人。Product 用于需求、研究、优先级、指标、实验、发布和复盘；Business Operations 用于运营、商务、预算、品牌、合同/报价材料和外部沟通。这些是人工路由说明，不会自动注入上下文。
+- 同一任务的后续轮次复用已确认的 tier、范围和已读上下文；仅在目标、影响面或验收标准发生实质变化时重新路由。focused tests 通常是 Engineering 的验收证据，不因测试而无限叠加 mode。
+- `routing/router.md` 是 tier 到模型和 reasoning effort 的唯一事实来源。用户、会话和 CLI 的显式选择优先；当前轮不可热切换主模型或 effort，运行时工具的 allowlist、角色锁和权限是最终约束。
+- A1 及以上路线对可见运行时字段要求实际 model/effort 与目标 tuple 精确一致；可见不一致是 mismatch 并 fail closed，更高 effort 不自动兼容。字段缺失或接口不可用明确记为 `runtime_observability=unobservable`：A1/B0/B1/B2/C1/C2 在父 receipt 已确认工具接受目标 tuple 且无 reroute/failure 证据时可按 requested/accepted 继续但不声称 actual verified；C3 在不可逆动作前需一次当前 task/scope/action 的 route exception。创建能力不可用时仍停止并报告 route exception，未经用户明确授权不得由当前根会话代做。
+- 本条是用户对符合上述路由条件时创建新/后台独立模型根会话的持久明确授权。创建前的 commentary 是信息披露，不是批准请求；工具 schema 与运行时权限优先，工具不接受授权、参数不支持或调用失败时报告 route exception，不伪造或绕过。工具明确接受授权时不得要求用户重复确认。若 `create_thread` 未直接暴露，先通过 `tool_search` 定向发现；只有工具发现后仍不可用或调用失败，才报告 route exception。创建 sub-agent 仍须满足 router 的委派条件。
+- 创建任何独立模型根会话（单代理）或 sub-agent 前，必须在 commentary 明确告知执行拓扑、准确模型、reasoning effort 和任务范围；sub-agent 还要说明角色、文件所有权、验收标准或失败升级依据。禁止静默创建；若运行时客观上无法事前提示，必须在创建后的第一条 commentary 立即披露。默认不委派；并发、写入、GUI 和完整构建边界均遵守 router。所有角色使用 router 的结构化回报合同。
+- 因模型/effort 不匹配的同一任务最多自动创建一次独立根任务；执行根可见 mismatch 时报告 route exception，不递归创建或静默降级；unobservable 按父 receipt 三态规则处理，不能写成 mismatch。用户/会话/CLI 显式组合优先，但仍须精确匹配。
+- 线程 ID 由创建方从 `create_thread` 返回值记录并在最终回复披露；执行任务禁止从 request metadata 提取或输出 thread/session 信息。只要本任务创建过独立根会话或 sub-agent，最终回复必须再次列出执行拓扑、实际模型和 reasoning effort、线程/agent ID、sub-agent 数量、任务结果，以及原会话是否发送过收敛或纠偏指令；不得只依赖可能被客户端折叠的 commentary 或笼统的“任务已创建”卡片。
+- 质量记录至少包含 `predicted_tier`、`final_tier`、`reroute_reason`、`first_success`、`user_correction`、`route_exception`、`retry` 和 `coordination_cost`（创建/等待/汇总成本）；每个主要任务桶保留至少 20 个真实样本作为观察下限，不因样本不足改动模型映射。
+- agent 代表能力与权限边界，不按职业一一新增；不得替代审批人、法务、财务、业务签字人或对外承诺主体。对外发送、签署、支付、采购、账户/权限变更、公开发布和生产变更等外部不可逆动作，必须由具备权限的人明确确认并实际执行；草案、计划或自动化不能自动获得该授权。"#;
 
 fn modern_managed_block(state: &State) -> String {
     let boundary = if !state.agents_existed_before && state.managed_separator.is_empty() {
@@ -2623,30 +2346,7 @@ fn modern_managed_block(state: &State) -> String {
         )
     };
     format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first resolve the Codex home: use explicit `CODEX_HOME` when set; otherwise use `~/.codex`. Never resolve this path relative to a repository or worktree. Then read `<codex_home>/z-codex-router/current.json`, followed by `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority. Runtime metadata is tri-state: exact observable fields are verified, visible differences are mismatch and fail closed, and missing fields are runtime_observability=unobservable. Route receipt protocol 1 is parent-owned: only the real create_thread caller may classify and create it, automatic root creation is at most one, child threads do not reclassify or recurse, and thread IDs come only from the tool return.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
-        state.version, state.payload_sha256
-    )
-}
-
-fn legacy_v1_0_0_managed_block(state: &State) -> String {
-    format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
-        state.version, state.payload_sha256
-    )
-}
-
-fn legacy_v1_0_1_managed_block(state: &State) -> String {
-    let boundary = if !state.agents_existed_before && state.managed_separator.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " agents_existed_before={} separator={}",
-            state.agents_existed_before,
-            managed_separator_label(&state.managed_separator)
-        )
-    };
-    format!(
-        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router (managed)\nFor each independent task, first read `z-codex-router/current.json`; then read `z-codex-router/versions/<current.version>/core/router.md`, resolve `z-codex-router/versions/<current.version>/profiles/portable/default.toml`, and read one relevant mode. Preserve user authority and fail closed if the profile or runtime cannot be verified.\n<!-- z-codex-router:end id={ROUTER_ID} -->",
+        "<!-- z-codex-router:begin id={ROUTER_ID} version={} sha256={} protocol={PROTOCOL}{boundary} -->\n# Z Codex Router（受管）\n先解析 Codex home：显式 `CODEX_HOME` 优先，否则使用 `~/.codex`；禁止相对于仓库或 worktree 解析。读取 `<codex_home>/z-codex-router/current.json`，再读取 `z-codex-router/versions/<current.version>/core/router.md` 与 `z-codex-router/versions/<current.version>/profiles/portable/default.toml`。在下方完整全局路由合同中，`$CODEX_HOME/routing/router.md` 与 `routing/router.md` 均指向这里解析出的版本化 `core/router.md`，无需单独的未版本化文件。\n\n{GLOBAL_ROUTING_POLICY}\n<!-- z-codex-router:end id={ROUTER_ID} -->",
         state.version, state.payload_sha256
     )
 }
@@ -2677,7 +2377,7 @@ fn create_immutable_version(
         if !replace_existing {
             return Err(RouterError::coded(
                 "E_IMMUTABLE_VERSION_CONFLICT",
-                "existing version directory has a different payload",
+                "现有 version 目录包含不同 payload",
             ));
         }
         fs::remove_dir_all(&destination)?;
@@ -2699,7 +2399,7 @@ fn create_immutable_version(
         if payload_hash(&staging)? != state.payload_sha256 {
             return Err(RouterError::coded(
                 "E_SOURCE_CHECKSUM",
-                "staged immutable payload hash differs from source",
+                "staging 中的不可变 payload hash 与 source 不一致",
             ));
         }
         fs::rename(&staging, &destination)?;
@@ -2725,7 +2425,7 @@ fn copy_path(source: &Path, destination: &Path) -> Result<()> {
         let relative = entry
             .path()
             .strip_prefix(source)
-            .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "cannot copy payload"))?;
+            .map_err(|_| RouterError::coded("E_SOURCE_INVALID", "无法复制 payload"))?;
         let target = destination.join(relative);
         if entry.file_type().is_dir() {
             fs::create_dir_all(target)?;
@@ -2750,10 +2450,7 @@ fn create_backup(home: &Path, backup: &Backup) -> Result<PathBuf> {
 fn create_version_backup(home: &Path, version: &str) -> Result<PathBuf> {
     let source = versions_path(home).join(version);
     if !source.is_dir() {
-        return Err(RouterError::coded(
-            "E_STATE_INVALID",
-            "installed version directory is missing",
-        ));
+        return Err(RouterError::coded("E_STATE_INVALID", "缺少已安装版本目录"));
     }
     let backups = router_path(home).join("backups/versions");
     fs::create_dir_all(&backups)?;
@@ -2855,23 +2552,22 @@ fn latest_backup(home: &Path) -> Result<PathBuf> {
     choices.sort();
     choices
         .pop()
-        .ok_or_else(|| RouterError::coded("E_NO_BACKUP", "no router backup is available"))
+        .ok_or_else(|| RouterError::coded("E_NO_BACKUP", "没有可用的 router backup"))
 }
 
 fn validated_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
     let root = router_path(home).join("backups");
-    let canonical_root = fs::canonicalize(&root).map_err(|_| {
-        RouterError::coded("E_TRANSACTION_PENDING", "router backup root is missing")
-    })?;
+    let canonical_root = fs::canonicalize(&root)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "缺少 router backup root"))?;
     let canonical_candidate = fs::canonicalize(candidate)
-        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "journal backup is missing"))?;
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "缺少 journal backup"))?;
     let is_backup = canonical_candidate
         .file_name()
         .is_some_and(|name| name.to_string_lossy().starts_with("backup-"));
     if !canonical_candidate.starts_with(&canonical_root) || !is_backup {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "journal backup escapes the managed backup directory",
+            "journal backup 越出受管 backup 目录",
         ));
     }
     Ok(canonical_candidate)
@@ -2879,43 +2575,36 @@ fn validated_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
 
 fn validated_version_backup_path(home: &Path, candidate: &Path) -> Result<PathBuf> {
     let root = router_path(home).join("backups/versions");
-    let canonical_root = fs::canonicalize(&root).map_err(|_| {
-        RouterError::coded("E_TRANSACTION_PENDING", "version backup root is missing")
-    })?;
+    let canonical_root = fs::canonicalize(&root)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "缺少 version backup root"))?;
     let canonical_candidate = fs::canonicalize(candidate)
-        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "version backup is missing"))?;
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "缺少 version backup"))?;
     let is_backup = canonical_candidate
         .file_name()
         .is_some_and(|name| name.to_string_lossy().starts_with("backup-"));
     if !canonical_candidate.starts_with(&canonical_root) || !is_backup {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "version backup escapes the managed backup directory",
+            "version backup 越出受管 backup 目录",
         ));
     }
     Ok(canonical_candidate)
 }
 
 fn pending_transaction(home: &Path) -> Result<(Journal, Backup, PathBuf)> {
-    let text = read_optional(&journal_path(home))?.ok_or_else(|| {
-        RouterError::coded(
-            "E_NOT_INSTALLED",
-            "no interrupted router transaction is present",
-        )
-    })?;
-    let journal: Journal = serde_json::from_str(&text).map_err(|_| {
-        RouterError::coded("E_TRANSACTION_PENDING", "transaction journal is invalid")
-    })?;
+    let text = read_optional(&journal_path(home))?
+        .ok_or_else(|| RouterError::coded("E_NOT_INSTALLED", "不存在中断的 router 事务"))?;
+    let journal: Journal = serde_json::from_str(&text)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "事务 journal 无效"))?;
     if journal.protocol != PROTOCOL {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "transaction journal protocol is unsupported",
+            "不支持该事务 journal protocol",
         ));
     }
     let backup_path = validated_backup_path(home, Path::new(&journal.backup))?;
-    let backup: Backup = serde_json::from_slice(&fs::read(&backup_path)?).map_err(|_| {
-        RouterError::coded("E_TRANSACTION_PENDING", "transaction backup is invalid")
-    })?;
+    let backup: Backup = serde_json::from_slice(&fs::read(&backup_path)?)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "事务 backup 无效"))?;
     Ok((journal, backup, backup_path))
 }
 
@@ -2926,7 +2615,6 @@ fn restore_backup_contents(home: &Path, backup: &Backup) -> Result<()> {
 }
 
 fn validate_active_installation(home: &Path, state: &State) -> Result<()> {
-    let _ = installed_contract(state)?;
     let version_root = versions_path(home).join(&state.version);
     validate_installed_version_root(&version_root, state)
 }
@@ -2943,21 +2631,19 @@ fn remove_abandoned_version_by_identity(
     if Version::parse(version).is_err() {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "pending transaction version is invalid",
+            "待处理事务的版本无效",
         ));
     }
     let root = versions_path(home).join(version);
     if !root.exists() {
         return Ok(());
     }
-    let installed: State =
-        serde_json::from_slice(&fs::read(root.join("install.json"))?).map_err(|_| {
-            RouterError::coded("E_TRANSACTION_PENDING", "pending version state is invalid")
-        })?;
+    let installed: State = serde_json::from_slice(&fs::read(root.join("install.json"))?)
+        .map_err(|_| RouterError::coded("E_TRANSACTION_PENDING", "待处理版本的 state 无效"))?;
     if installed.version != version || installed.payload_sha256 != payload_sha256 {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "pending version conflicts with managed assets",
+            "待处理版本与受管资产冲突",
         ));
     }
     validate_installed_version_root(&root, &installed)?;
@@ -2974,7 +2660,7 @@ fn cleanup_managed_assets(home: &Path) -> Result<bool> {
     if !root_type.is_dir() || root_type.file_type().is_symlink() {
         return Err(RouterError::coded(
             "E_MANAGED_ASSET_CONFLICT",
-            "router managed asset root is not a regular directory",
+            "router 受管资产 root 不是普通目录",
         ));
     }
     for entry in fs::read_dir(&root)? {
@@ -2986,7 +2672,7 @@ fn cleanup_managed_assets(home: &Path) -> Result<bool> {
             _ => {
                 return Err(RouterError::coded(
                     "E_MANAGED_ASSET_CONFLICT",
-                    format!("unexpected managed asset {}", entry.path().display()),
+                    format!("发现意外受管资产 {}", entry.path().display()),
                 ))
             }
         }
@@ -3000,7 +2686,7 @@ fn validate_version_assets(versions: &Path) -> Result<()> {
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(RouterError::coded(
             "E_MANAGED_ASSET_CONFLICT",
-            "router versions path is not a regular directory",
+            "router versions 路径不是普通目录",
         ));
     }
     for entry in fs::read_dir(versions)? {
@@ -3011,20 +2697,15 @@ fn validate_version_assets(versions: &Path) -> Result<()> {
         {
             return Err(RouterError::coded(
                 "E_MANAGED_ASSET_CONFLICT",
-                format!("invalid managed version asset {}", entry.path().display()),
+                format!("无效受管版本资产 {}", entry.path().display()),
             ));
         }
         let state: State = serde_json::from_slice(&fs::read(entry.path().join("install.json"))?)
-            .map_err(|_| {
-                RouterError::coded(
-                    "E_MANAGED_ASSET_CONFLICT",
-                    "managed version state is invalid",
-                )
-            })?;
+            .map_err(|_| RouterError::coded("E_MANAGED_ASSET_CONFLICT", "受管版本 state 无效"))?;
         if state.version != name {
             return Err(RouterError::coded(
                 "E_MANAGED_ASSET_CONFLICT",
-                "managed version directory does not match its state",
+                "受管版本目录与其 state 不一致",
             ));
         }
         validate_installed_version_root(&entry.path(), &state)?;
@@ -3037,7 +2718,7 @@ fn validate_backup_assets(backups: &Path) -> Result<()> {
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(RouterError::coded(
             "E_MANAGED_ASSET_CONFLICT",
-            "router backups path is not a regular directory",
+            "router backups 路径不是普通目录",
         ));
     }
     for entry in fs::read_dir(backups)? {
@@ -3051,12 +2732,11 @@ fn validate_backup_assets(backups: &Path) -> Result<()> {
         {
             return Err(RouterError::coded(
                 "E_MANAGED_ASSET_CONFLICT",
-                format!("invalid managed backup asset {}", entry.path().display()),
+                format!("无效受管 backup 资产 {}", entry.path().display()),
             ));
         }
-        serde_json::from_slice::<Backup>(&fs::read(entry.path())?).map_err(|_| {
-            RouterError::coded("E_MANAGED_ASSET_CONFLICT", "managed backup is invalid")
-        })?;
+        serde_json::from_slice::<Backup>(&fs::read(entry.path())?)
+            .map_err(|_| RouterError::coded("E_MANAGED_ASSET_CONFLICT", "受管 backup 无效"))?;
     }
     Ok(())
 }
@@ -3075,7 +2755,7 @@ fn restore_optional(path: &Path, contents: Option<&str>) -> Result<()> {
 fn read_state(home: &Path) -> Result<Option<State>> {
     match read_optional(&current_path(home))? {
         Some(text) => Ok(Some(serde_json::from_str(&text).map_err(|_| {
-            RouterError::coded("E_STATE_INVALID", "router current pointer is invalid")
+            RouterError::coded("E_STATE_INVALID", "router current pointer 无效")
         })?)),
         None => Ok(None),
     }
@@ -3085,7 +2765,7 @@ fn ensure_no_pending_transaction(home: &Path) -> Result<()> {
     if journal_path(home).exists() {
         return Err(RouterError::coded(
             "E_TRANSACTION_PENDING",
-            "a previous router transaction requires safe recovery before another action",
+            "先前的 router 事务要求在执行其他操作前安全恢复",
         ));
     }
     Ok(())
@@ -3096,7 +2776,7 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(
-            RouterError::coded("E_PERMISSION", format!("cannot read {}", path.display())),
+            RouterError::coded("E_PERMISSION", format!("无法读取 {}", path.display())),
         ),
         Err(error) => Err(error.into()),
     }
@@ -3105,7 +2785,7 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "write target has no parent"))?;
+        .ok_or_else(|| RouterError::coded("E_PATH_INVALID", "写入目标没有父目录"))?;
     fs::create_dir_all(parent)?;
     let mut temporary = NamedTempFile::new_in(parent)?;
     temporary.write_all(contents)?;
@@ -3140,7 +2820,7 @@ fn replace_file(temporary: &Path, target: &Path) -> Result<()> {
     if result == 0 {
         return Err(RouterError::coded(
             "E_IO",
-            format!("failed to atomically replace {}", target.display()),
+            format!("无法原子替换 {}", target.display()),
         ));
     }
     Ok(())
@@ -3213,49 +2893,6 @@ mod tests {
         temp
     }
 
-    const LEGACY_V1_PORTABLE: &str = r#"schema_version = 1
-
-[metadata]
-name = "portable-default"
-status = "stable"
-purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
-
-[preflight]
-require_explicit_runtime_metadata = true
-require_exact_route_match = true
-require_platform_capability = true
-on_unknown = "fail-closed"
-on_missing_profile = "fail-closed"
-on_incompatible_profile = "fail-closed"
-on_disabled_candidate = "fail-closed"
-
-[selection]
-stable_profile = "stable/current-gpt-5.6-reference.toml"
-candidate_profiles = ["candidate/example-next-model.toml"]
-allow_candidate_as_default = false
-silent_fallback = false
-"#;
-
-    const LEGACY_V1_COMPATIBILITY: &str = r#"{
-  "schemaVersion": 1,
-  "runtime": {
-    "codexHomeRequired": true,
-    "platforms": ["darwin", "linux", "windows"],
-    "architectures": ["amd64", "arm64"],
-    "requiredProfiles": [
-      "portable/default.toml",
-      "stable/current-gpt-5.6-reference.toml",
-      "candidate/example-next-model.toml"
-    ]
-  },
-  "installer": {
-    "managedBlockProtocol": 1,
-    "configToml": "untouched-1.0.0",
-    "failureMode": "closed"
-  }
-}
-"#;
-
     fn set_release_identity(root: &Path, version: &str) -> String {
         let payload_sha256 = payload_hash(root).unwrap();
         let release_path = root.join("release/manifest.json");
@@ -3272,63 +2909,6 @@ silent_fallback = false
         payload_sha256
     }
 
-    fn legacy_v1_0_1_fixture() -> TempDir {
-        let temp = source_fixture();
-        let root = temp.path().join("plugins/z-codex-router");
-        fs::write(
-            root.join("profiles/portable/default.toml"),
-            LEGACY_V1_PORTABLE,
-        )
-        .unwrap();
-        fs::write(root.join("compatibility.json"), LEGACY_V1_COMPATIBILITY).unwrap();
-        set_release_identity(&root, "1.0.1");
-        temp
-    }
-
-    fn v1_0_2_fixture() -> TempDir {
-        let temp = source_fixture();
-        let root = temp.path().join("plugins/z-codex-router");
-        set_release_identity(&root, "1.0.2");
-        temp
-    }
-
-    fn seed_active_installation(
-        home: &Path,
-        source: &Path,
-        state: State,
-        user_agents_prefix: &str,
-    ) {
-        let version_root = versions_path(home).join(&state.version);
-        for relative in payload_roots() {
-            copy_path(&source.join(relative), &version_root.join(relative)).unwrap();
-        }
-        copy_path(
-            &source.join("release/manifest.json"),
-            &version_root.join("release/manifest.json"),
-        )
-        .unwrap();
-        fs::write(
-            version_root.join("install.json"),
-            serde_json::to_vec_pretty(&state).unwrap(),
-        )
-        .unwrap();
-        fs::create_dir_all(router_path(home)).unwrap();
-        fs::write(
-            current_path(home),
-            serde_json::to_vec_pretty(&state).unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            agents_path(home),
-            format!(
-                "{user_agents_prefix}{}{block}",
-                state.managed_separator,
-                block = managed_block(&state)
-            ),
-        )
-        .unwrap();
-    }
-
     fn fixture() -> TempDir {
         tempfile::tempdir().expect("fixture")
     }
@@ -3336,18 +2916,50 @@ silent_fallback = false
     #[test]
     fn managed_block_resolves_codex_home_before_router_state() {
         let state = State {
-            version: "1.0.3".into(),
+            version: "1.0.0".into(),
             payload_sha256: "0".repeat(64),
             installed_at_unix_ns: 0,
             agents_existed_before: false,
             managed_separator: String::new(),
         };
         let block = managed_block(&state);
-        assert!(block.contains("explicit `CODEX_HOME` when set"));
-        assert!(block.contains("otherwise use `~/.codex`"));
-        assert!(block.contains("Never resolve this path relative to a repository or worktree"));
+        assert!(block.contains("显式 `CODEX_HOME` 优先，否则使用 `~/.codex`"));
+        assert!(block.contains("（未设置时 `$CODEX_HOME` 为 `~/.codex`）"));
+        assert!(block.contains("禁止相对于仓库或 worktree 解析"));
         assert!(block.contains("<codex_home>/z-codex-router/current.json"));
+        assert!(block.contains("无需单独的未版本化文件"));
+        assert!(block.contains(GLOBAL_ROUTING_POLICY));
         assert!(!block.contains("first read `z-codex-router/current.json`"));
+    }
+
+    #[test]
+    fn current_managed_block_contains_the_complete_global_routing_contract() {
+        let state = State {
+            version: "1.0.0".into(),
+            payload_sha256: "0".repeat(64),
+            installed_at_unix_ns: 0,
+            agents_existed_before: true,
+            managed_separator: "\n".into(),
+        };
+        let block = managed_block(&state);
+        assert_eq!(block.matches("## 全局路由").count(), 1);
+        for marker in [
+            "先读取一次 `$CODEX_HOME/routing/router.md`",
+            "`routing/router.md` 是 tier 到模型和 reasoning effort 的唯一事实来源",
+            "本条是用户对符合上述路由条件时创建新/后台独立模型根会话的持久明确授权",
+            "创建前的 commentary 是信息披露，不是批准请求",
+            "工具明确接受授权时不得要求用户重复确认",
+            "若 `create_thread` 未直接暴露，先通过 `tool_search` 定向发现",
+            "同一任务最多自动创建一次独立根任务",
+            "线程 ID 由创建方从 `create_thread` 返回值记录",
+            "`coordination_cost`（创建/等待/汇总成本）",
+            "外部不可逆动作，必须由具备权限的人明确确认并实际执行",
+        ] {
+            assert!(
+                block.contains(marker),
+                "managed global routing contract is missing: {marker}"
+            );
+        }
     }
 
     #[test]
@@ -3371,13 +2983,12 @@ silent_fallback = false
             "自动根创建总数仍为 `<=1`",
             "thread、session",
             "`stable/current-gpt-5.6-reference.toml` 是安装随附的 shipped default tier mapping",
-            "Persistent user profile override",
+            "持久用户 profile override",
             "ROUTE_HANDOFF_REQUIRED",
             "ROUTE_CREATE_FAILED",
             "ROUTE_CREATE_UNAVAILABLE",
             "严禁 `spawn_agent` fallback",
             "请为当前相同任务范围创建一个新的 Codex 独立任务",
-            "Create a new independent Codex task for the same current scope",
             "profile restore <reset 返回的 backup 路径>",
             "在开始领域诊断前就创建精确的",
             "create_thread` 未直接暴露，先对线程创建能力执行一次 `tool_search`",
@@ -3463,184 +3074,6 @@ silent_fallback = false
             codex_home: Some(home.to_path_buf()),
             command,
         })
-    }
-
-    #[test]
-    fn recognized_v1_0_1_upgrade_replaces_only_the_legacy_contract_and_preserves_user_files() {
-        let temp = fixture();
-        let home = temp.path().join("legacy-upgrade-home");
-        fs::create_dir_all(&home).unwrap();
-        let legacy = legacy_v1_0_1_fixture();
-        let legacy_root = legacy.path().join("plugins/z-codex-router");
-        let legacy_plugin: PluginManifest = serde_json::from_slice(
-            &fs::read(legacy_root.join(".codex-plugin/plugin.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(legacy_plugin.version, "1.0.1");
-        let legacy_state = State {
-            version: "1.0.1".into(),
-            payload_sha256: payload_hash(&legacy_root).unwrap(),
-            installed_at_unix_ns: 1,
-            agents_existed_before: true,
-            managed_separator: "\n".into(),
-        };
-        seed_active_installation(&home, &legacy_root, legacy_state, "# user rule\n");
-        let config_before = "unrelated = \"keep\"\n";
-        fs::write(config_path(&home), config_before).unwrap();
-        let default_mapping = parse_routing_mapping(
-            &fs::read_to_string(
-                source_root().join("profiles/stable/current-gpt-5.6-reference.toml"),
-            )
-            .unwrap(),
-            "E_PROFILE_INCOMPATIBLE",
-        )
-        .unwrap();
-        let override_before = render_user_profile(&default_mapping);
-        fs::write(user_profile_path(&home), &override_before).unwrap();
-
-        let current = source_fixture();
-        let upgraded = execute(Options {
-            source: Some(current.path().join("plugins/z-codex-router")),
-            codex_home: Some(home.clone()),
-            command: Command::Upgrade { dry_run: false },
-        })
-        .unwrap();
-        assert_eq!(upgraded.code, "OK");
-        assert_eq!(upgraded.version.as_deref(), Some("1.0.3"));
-        assert_eq!(
-            fs::read_to_string(config_path(&home)).unwrap(),
-            config_before
-        );
-        assert_eq!(
-            fs::read_to_string(user_profile_path(&home)).unwrap(),
-            override_before
-        );
-        let agents = fs::read_to_string(agents_path(&home)).unwrap();
-        assert!(agents.starts_with("# user rule\n"));
-        assert!(agents.contains("version=1.0.3"));
-        assert_eq!(agents.matches(managed_begin()).count(), 1);
-        let doctor = run(&home, Command::Doctor, false).unwrap();
-        assert_eq!(doctor.code, "OK_ENABLED");
-        assert_eq!(doctor.profile.unwrap().source, "user override");
-    }
-
-    #[test]
-    fn legacy_v1_0_1_profile_drift_stays_closed_and_recovery_keeps_the_old_version_available() {
-        let temp = fixture();
-        let home = temp.path().join("legacy-drift-home");
-        fs::create_dir_all(&home).unwrap();
-        let legacy = legacy_v1_0_1_fixture();
-        let legacy_root = legacy.path().join("plugins/z-codex-router");
-        let state = State {
-            version: "1.0.1".into(),
-            payload_sha256: payload_hash(&legacy_root).unwrap(),
-            installed_at_unix_ns: 1,
-            agents_existed_before: false,
-            managed_separator: String::new(),
-        };
-        seed_active_installation(&home, &legacy_root, state.clone(), "");
-
-        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
-        fs::write(
-            agents_path(&home),
-            agents_before.replace("current.json", "edited-current.json"),
-        )
-        .unwrap();
-        let current = source_fixture();
-        assert_eq!(
-            execute(Options {
-                source: Some(current.path().join("plugins/z-codex-router")),
-                codex_home: Some(home.clone()),
-                command: Command::Upgrade { dry_run: false },
-            })
-            .unwrap_err()
-            .code(),
-            "E_MANAGED_BLOCK_DRIFT"
-        );
-        assert_eq!(read_state(&home).unwrap().unwrap().version, "1.0.1");
-
-        fs::write(
-            versions_path(&home).join("1.0.1/profiles/portable/default.toml"),
-            LEGACY_V1_PORTABLE.replace("on_unknown = \"fail-closed\"", "on_unknown = \"continue\""),
-        )
-        .unwrap();
-        assert_eq!(
-            run(&home, Command::Doctor, false).unwrap_err().code(),
-            "E_LEGACY_PROFILE_INCOMPATIBLE"
-        );
-
-        // Re-seed the trusted legacy fixture, then simulate an interrupted upgrade. Recovery
-        // restores the original exact files and its legacy contract remains verifiable.
-        seed_active_installation(&home, &legacy_root, state, "");
-        let agents_before = fs::read_to_string(agents_path(&home)).unwrap();
-        let current_before = fs::read_to_string(current_path(&home)).unwrap();
-        let backup = Backup {
-            agents: Some(agents_before.clone()),
-            current: Some(current_before.clone()),
-        };
-        let backup_path = create_backup(&home, &backup).unwrap();
-        write_journal(
-            &home,
-            "upgrade",
-            &backup_path,
-            Some("partial managed write"),
-            Some("partial state"),
-            None,
-        )
-        .unwrap();
-        fs::write(agents_path(&home), "partial managed write").unwrap();
-        fs::write(current_path(&home), "partial state").unwrap();
-        assert_eq!(
-            run(&home, Command::Recover, false).unwrap().code,
-            "OK_RECOVERED"
-        );
-        assert_eq!(
-            run(&home, Command::Doctor, false)
-                .unwrap()
-                .version
-                .as_deref(),
-            Some("1.0.1")
-        );
-    }
-
-    #[test]
-    fn v1_0_2_upgrade_preserves_safe_auto_and_user_override_bytes() {
-        let temp = fixture();
-        let home = temp.path().join("v1-0-2-upgrade-home");
-        fs::create_dir_all(&home).unwrap();
-        let old = v1_0_2_fixture();
-        let old_root = old.path().join("plugins/z-codex-router");
-        let state = State {
-            version: "1.0.2".into(),
-            payload_sha256: payload_hash(&old_root).unwrap(),
-            installed_at_unix_ns: 1,
-            agents_existed_before: true,
-            managed_separator: "\n".into(),
-        };
-        seed_active_installation(&home, &old_root, state, "# keep this\n");
-        fs::write(config_path(&home), "unrelated = 7\n").unwrap();
-        run(&home, Command::SafeAutoEnable, false).unwrap();
-        run(&home, Command::ProfileInit, false).unwrap();
-        let config_before = fs::read(config_path(&home)).unwrap();
-        let safe_auto_before = fs::read(safe_auto_state_path(&home)).unwrap();
-        let override_before = fs::read(user_profile_path(&home)).unwrap();
-
-        let current = source_fixture();
-        let upgraded = execute(Options {
-            source: Some(current.path().join("plugins/z-codex-router")),
-            codex_home: Some(home.clone()),
-            command: Command::Upgrade { dry_run: false },
-        })
-        .unwrap();
-        assert_eq!(upgraded.version.as_deref(), Some("1.0.3"));
-        assert_eq!(fs::read(config_path(&home)).unwrap(), config_before);
-        assert_eq!(
-            fs::read(safe_auto_state_path(&home)).unwrap(),
-            safe_auto_before
-        );
-        assert_eq!(fs::read(user_profile_path(&home)).unwrap(), override_before);
-        let doctor = run(&home, Command::Doctor, false).unwrap();
-        assert_eq!(doctor.profile.unwrap().source, "user override");
     }
 
     #[test]
@@ -3840,28 +3273,20 @@ silent_fallback = false
     }
 
     #[test]
-    fn installed_plugin_identity_is_optional_for_historical_roots_but_exact_when_present() {
+    fn installed_plugin_identity_is_optional_but_exact_when_present() {
         let temp = fixture();
-        let home = temp.path().join("legacy-plugin-identity-home");
+        let home = temp.path().join("plugin-identity-home");
         fs::create_dir_all(&home).unwrap();
-        let legacy = legacy_v1_0_1_fixture();
-        let legacy_root = legacy.path().join("plugins/z-codex-router");
-        let state = State {
-            version: "1.0.1".into(),
-            payload_sha256: payload_hash(&legacy_root).unwrap(),
-            installed_at_unix_ns: 1,
-            agents_existed_before: false,
-            managed_separator: String::new(),
-        };
-        seed_active_installation(&home, &legacy_root, state, "");
-        let installed_root = versions_path(&home).join("1.0.1");
+        run(&home, Command::Install, true).unwrap();
+        let state = read_state(&home).unwrap().unwrap();
+        let installed_root = versions_path(&home).join(&state.version);
         assert!(!installed_root.join(".codex-plugin/plugin.json").exists());
         assert_eq!(
             run(&home, Command::Doctor, false).unwrap().code,
             "OK_ENABLED"
         );
         copy_path(
-            &legacy_root.join(".codex-plugin/plugin.json"),
+            &source_root().join(".codex-plugin/plugin.json"),
             &installed_root.join(".codex-plugin/plugin.json"),
         )
         .unwrap();
@@ -3872,7 +3297,7 @@ silent_fallback = false
         let plugin_path = installed_root.join(".codex-plugin/plugin.json");
         let mut plugin: serde_json::Value =
             serde_json::from_slice(&fs::read(&plugin_path).unwrap()).unwrap();
-        plugin["version"] = serde_json::Value::String("1.0.3".into());
+        plugin["version"] = serde_json::Value::String("9.9.9".into());
         fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
         assert_eq!(
             run(&home, Command::Doctor, false).unwrap_err().code(),
@@ -3919,9 +3344,10 @@ silent_fallback = false
         let agents = home.join("AGENTS.md");
         fs::write(
             &agents,
-            fs::read_to_string(&agents)
-                .unwrap()
-                .replace("managed", "altered"),
+            fs::read_to_string(&agents).unwrap().replace(
+                "工具明确接受授权时不得要求用户重复确认",
+                "工具明确接受授权时仍要求用户重复确认",
+            ),
         )
         .unwrap();
         assert_eq!(
@@ -3949,7 +3375,7 @@ silent_fallback = false
         let cachebuster_path = cachebuster_plugin.join(".codex-plugin/plugin.json");
         let mut cachebuster: serde_json::Value =
             serde_json::from_slice(&fs::read(&cachebuster_path).unwrap()).unwrap();
-        cachebuster["version"] = serde_json::Value::String("1.0.3+codex.local-test".into());
+        cachebuster["version"] = serde_json::Value::String("1.0.0+codex.local-test".into());
         fs::write(
             &cachebuster_path,
             serde_json::to_vec_pretty(&cachebuster).unwrap(),
@@ -4037,7 +3463,7 @@ silent_fallback = false
         run(&home, Command::Install, true).unwrap();
         let original_agents = fs::read_to_string(agents_path(&home)).unwrap();
         fs::write(
-            versions_path(&home).join("1.0.3/core/router.md"),
+            versions_path(&home).join("1.0.0/core/router.md"),
             "user modification",
         )
         .unwrap();
@@ -4099,29 +3525,29 @@ silent_fallback = false
 
         let newer = temp.path().join("newer-source");
         copy_path(&source_root(), &newer).unwrap();
-        set_release_identity(&newer, "1.0.4");
+        set_release_identity(&newer, "1.1.0");
         let upgraded = execute(Options {
             source: Some(newer),
             codex_home: Some(home.clone()),
             command: Command::Upgrade { dry_run: false },
         })
         .unwrap();
-        assert_eq!(upgraded.version.as_deref(), Some("1.0.4"));
+        assert_eq!(upgraded.version.as_deref(), Some("1.1.0"));
         let checked = run(&home, Command::Doctor, false).unwrap();
         assert_eq!(checked.code, "OK_ENABLED");
-        assert_eq!(checked.version.as_deref(), Some("1.0.4"));
+        assert_eq!(checked.version.as_deref(), Some("1.1.0"));
         let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
         assert_eq!(agents.matches(managed_begin()).count(), 1);
-        assert!(agents.contains("version=1.0.4"));
+        assert!(agents.contains("version=1.1.0"));
         fs::write(
             agents_path(&home),
             format!("{agents}\n# User rule added after enable\n"),
         )
         .unwrap();
         let rolled_back = run(&home, Command::Rollback, false).unwrap();
-        assert_eq!(rolled_back.version.as_deref(), Some("1.0.3"));
+        assert_eq!(rolled_back.version.as_deref(), Some("1.0.0"));
         let rolled_back_agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
-        assert!(rolled_back_agents.contains("version=1.0.3"));
+        assert!(rolled_back_agents.contains("version=1.0.0"));
         assert!(rolled_back_agents.contains("# User rule added after enable"));
     }
 
@@ -4156,7 +3582,7 @@ silent_fallback = false
             command: Command::Upgrade { dry_run: false },
         })
         .unwrap();
-        assert_eq!(refreshed.version.as_deref(), Some("1.0.3"));
+        assert_eq!(refreshed.version.as_deref(), Some("1.0.0"));
         assert_eq!(
             read_state(&home).unwrap().unwrap().payload_sha256,
             payload_sha256
@@ -4198,7 +3624,7 @@ silent_fallback = false
         fs::write(current_path(&home), "not valid json").unwrap();
         let restored = run(&home, Command::Recover, false).unwrap();
         assert_eq!(restored.code, "OK_RECOVERED");
-        assert_eq!(restored.version.as_deref(), Some("1.0.3"));
+        assert_eq!(restored.version.as_deref(), Some("1.0.0"));
         assert_eq!(
             fs::read_to_string(agents_path(&home)).unwrap(),
             agents_before
@@ -4257,10 +3683,10 @@ silent_fallback = false
         let current_before = fs::read_to_string(current_path(&home)).unwrap();
         let newer = temp.path().join("newer-source");
         copy_path(&source_root(), &newer).unwrap();
-        set_release_identity(&newer, "1.0.4");
+        set_release_identity(&newer, "1.1.0");
         let source = load_source(Some(newer)).unwrap();
         let next = State {
-            version: "1.0.4".into(),
+            version: "1.1.0".into(),
             payload_sha256: source.manifest.payload_sha256.clone(),
             installed_at_unix_ns: now_ns(),
             agents_existed_before: true,
@@ -4283,7 +3709,7 @@ silent_fallback = false
         .unwrap();
         let recovered = run(&home, Command::Recover, false).unwrap();
         assert_eq!(recovered.code, "OK_RECOVERED");
-        assert!(!versions_path(&home).join("1.0.4").exists());
+        assert!(!versions_path(&home).join("1.1.0").exists());
         assert_eq!(
             fs::read_to_string(agents_path(&home)).unwrap(),
             agents_before

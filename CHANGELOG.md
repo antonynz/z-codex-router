@@ -1,66 +1,16 @@
-# Changelog
+# 变更日志
 
-## 1.0.3 - 2026-07-30
+## 1.0.0 - 2026-07-30
 
-- Made healthy 1.0.1 and 1.0.2 installations first-class transactional migration sources. The
-  new launcher validates each recognized installed payload against its own contract, replaces only
-  the exact old managed block, preserves user-owned `AGENTS.md`, `config.toml`, Safe Auto state,
-  and profile override bytes, and keeps real managed drift fail-closed and recoverable.
-- Added a persistent, validated tier-to-model/effort override at
-  `<codex_home>/z-codex-router-profile.toml`. `routerctl profile show|init|validate|set|reset`
-  exposes its lifecycle; Doctor reports source, path, and mapping hash. Invalid overrides and
-  runtime allowlist conflicts fail closed rather than silently falling back.
-- `profile reset` now emits a SHA-256-attested managed backup and `routerctl profile restore <backup>`
-  is the only supported recovery path: it confines paths to the managed backup directory, validates the
-  backup and complete mapping, rejects drift, and restores atomically without overwriting an existing override.
-- Defined the capability-aware independent-root handoff boundary for desktop policy conflicts:
-  `ROUTE_HANDOFF_REQUIRED`, `ROUTE_CREATE_FAILED`, and `ROUTE_CREATE_UNAVAILABLE` stop safely and
-  never substitute `spawn_agent` or the current root for `create_thread`. The required follow-up is now
-  a direct receipt-preserving new-task command rather than a meta-request that desktop policy may not recognize.
-- Added offline upgrade, profile, policy, and bootstrap coverage plus bilingual copy-paste upgrade
-  and troubleshooting guidance. Frozen old-version fixtures now keep source plugin/release identities
-  consistent and model the historical immutable version projection. Public v1.0.2 remains unchanged.
-
-## 1.0.2 - 2026-07-30
-
-- Resolved the Codex home before reading router state in the managed `AGENTS.md` block, with
-  explicit `CODEX_HOME` taking precedence over `~/.codex` and no repository-relative fallback.
-- Expanded the portable routing core with exact model/effort matching for all persistent tiers,
-  the C1 independent-root handoff, commentary and thread-creation protocol, post-C1
-  reclassification, and sequential-task delegation boundaries.
-- Added regression content contracts and synchronized active release metadata and asset checks.
-- Added an explicit `safe-auto` opt-in that atomically manages only the three approval/sandbox keys,
-  with key-level restore, drift detection, crash recovery, status/Doctor checks, and an uninstall
-  boundary that requires restoring permission configuration first.
-- Added an end-to-end policy activation verifier and wired it into source and release-asset preflight;
-  compatibility metadata now distinguishes untouched ordinary routing from explicit safe-auto config.
-- Added protocol-1 parent-owned route receipts, a one-root creation cap, child non-reclassification,
-  create-thread-only IDs, and observable/mismatch/unobservable runtime verification. Non-C3 unknown
-  fields are explicitly requested/accepted (never claimed verified); C3 unknown fields require one
-  scoped route exception and visible mismatch remains fail closed.
-- Added an explicit same-version `upgrade` refresh with a journaled version-directory backup so local
-  1.0.2 payload iterations can update the active managed block without touching safe-auto/config.toml.
-
-## 1.0.1 - 2026-07-29
-
-- Added `recover-router` and `uninstall-router` skills backed by fail-closed `recover` and
-  `uninstall` control-plane commands.
-- Added safe recovery for interrupted transactions, including verified cleanup of a version
-  created by the interrupted transaction.
-- Protected unmanaged `AGENTS.md` and `config.toml` content during uninstall, with repeatable
-  not-enabled behavior and explicit Doctor status.
-- Added bilingual README prompts for install and enable, recovery or rollback, and disable and
-  uninstall workflows.
-
-## 1.0.0 - 2026-07-29
-
-- Renamed the unpublished local plugin, crate, marketplace, managed-state namespace, and release assets to Z Codex Router (`z-codex-router`).
-- Initial local plugin scaffold and repository marketplace entry.
-- Added fail-closed `routerctl` source, portable routing core, profiles, role templates, and fixture tests.
-- Added explicit native Rust targets and packaged artifacts for macOS, Linux, and Windows on arm64 and x86_64.
-- Added checksum-verified POSIX and PowerShell bootstrap installers with persistent marketplace
-  sources, cache-aware repeat installs, explicit enablement, and isolated Doctor evidence.
-- Added tag-gated public GitHub Release automation for six native archives, `SHA256SUMS`, bootstrap
-  scripts, and the bilingual Agent install contract.
-- Refocused the README and architecture diagrams on exact model and reasoning-effort selection.
-- Added review-material templates. No public marketplace submission has been made.
+- 发布重新定义后的首个公开基线；此前没有实际用户，因此不保留未采用版本的迁移历史。
+- 新设备首次启用时，hash-managed `AGENTS.md` block 写入完整十条 `## 全局路由` 合同。明确
+  install/enable 或 upgrade 会形成持久请求；tool policy 接受时，commentary 披露后直接进行一次同
+  scope、精确 tuple 的 `create_thread` 调用，无需用户发送第二条消息。
+- 路由继续 fail closed：持久请求只覆盖同一 task scope 的一个精确独立根，不授权 sub-agent、第二个
+  任务、sandbox 扩权、外部不可逆动作或替代人类审批。host policy 明确拒绝、工具不可用、参数不支持
+  或调用失败时，以对应 route exception 停止。
+- 将合同中的历史名称 `$CODEX_HOME/routing/router.md` 映射到不可变活动版本
+  `z-codex-router/versions/<current.version>/core/router.md`；新设备无需额外的未版本化路由文件。
+- Doctor、upgrade、rollback、recover、bootstrap、profile、Safe Auto 与 route receipt 使用统一的
+  v1.0.0 合同和回归测试；移除未发布版本专用的迁移分支与 fixture。
+- 除 README 外，面向用户的项目文档与 plugin skill 以中文为主，必要的特殊名词和机器 token 保留英文。

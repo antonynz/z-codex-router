@@ -3,7 +3,7 @@ schema_version = 1
 [metadata]
 name = "example-next-model"
 status = "disabled"
-purpose = "Illustrative candidate profile for a future model; it cannot be selected or replace stable."
+purpose = "用于未来 model 的示例 candidate profile；不能被选中，也不能替代 stable。"
 evaluation_state = "unevaluated"
 enabled = false
 

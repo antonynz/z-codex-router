@@ -43,6 +43,9 @@ CONTRACT_MARKERS = (
     "classification_owner=parent",
     "creation_tool=create_thread",
     "automatic_root_creations=1",
+    "持久、受限的独立根创建请求",
+    "不得要求用户重复确认",
+    "只有当宿主策略明确要求当前轮用户消息中的新任务请求",
     "requested/accepted，不声称 actual verified",
     "C3/高风险",
     "纯提示协议没有密码学防伪能力",
@@ -65,7 +68,7 @@ CONTRACT_MARKERS = (
     "E_SAFE_AUTO_TRANSACTION_PENDING",
     "safe-auto doctor",
     "E_SAFE_AUTO_ACTIVE",
-    "Persistent user profile override",
+    "持久用户 profile override",
     "z-codex-router-profile.toml",
     "ROUTE_PROFILE_RUNTIME_UNAVAILABLE",
     "ROUTE_HANDOFF_REQUIRED",
@@ -74,7 +77,6 @@ CONTRACT_MARKERS = (
     "严禁 `spawn_agent` fallback",
     "final topology disclosure",
     "请为当前相同任务范围创建一个新的 Codex 独立任务",
-    "Create a new independent Codex task for the same current scope",
     "profile restore <reset 返回的 backup 路径>",
 )
 PROFILE_OVERRIDE = {
@@ -87,6 +89,12 @@ PROFILE_OVERRIDE = {
     "invalid": "fail-closed",
     "runtime_allowlist": "create-thread-intersection-fail-closed",
     "restore": "managed-backup-only-validate-atomic",
+}
+INDEPENDENT_ROOT_AUTHORIZATION = {
+    "source": "explicit-install-enable-or-upgrade-managed-block",
+    "scope": "one-per-task-exact-route",
+    "repeat_confirmation": "not-required-when-host-accepts-durable-request",
+    "policy_conflict": "route-handoff-required",
 }
 
 
@@ -184,6 +192,11 @@ def main() -> None:
         fail("portable selection permits candidate fallback")
     if portable.get("profile_override") != PROFILE_OVERRIDE:
         fail("portable profile override contract differs")
+    if (
+        portable.get("independent_root_authorization")
+        != INDEPENDENT_ROOT_AUTHORIZATION
+    ):
+        fail("portable independent-root authorization contract differs")
 
     for name in MODES:
         if not (PLUGIN / "core" / "modes" / name).is_file():

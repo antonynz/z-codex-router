@@ -1,5 +1,5 @@
-# Terms
+# 条款
 
-Z Codex Router is provided under the Apache-2.0 license. You are responsible for reviewing changes before applying them to a production or regulated environment.
+Z Codex Router 按 Apache-2.0 license 提供。将变更应用到 production 或受监管环境前，用户有责任完成审核。
 
-The plugin does not grant authority to make external commitments, alter accounts, approve legal or financial actions, or publish content.
+本 plugin 不授予对外承诺、修改账户、批准法律/财务动作或发布内容的权限。

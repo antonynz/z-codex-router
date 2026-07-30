@@ -2,18 +2,34 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use z_codex_router::{execute, Command, Options};
 
+const HELP_TEMPLATE: &str =
+    "{about-with-newline}\n用法：{usage}\n\n命令：\n{subcommands}\n选项：\n{options}";
+
 #[derive(Parser)]
 #[command(
     name = "routerctl",
-    about = "Internal control plane for Z Codex Router (routing and explicit safe-auto approval opt-in)"
+    about = "Z Codex Router 内部控制面（路由与显式 Safe Auto 审批 opt-in）",
+    help_template = HELP_TEMPLATE,
+    disable_help_subcommand = true,
+    disable_help_flag = true,
+    subcommand_value_name = "命令"
 )]
 struct Cli {
-    /// Plugin release root. The Codex skill supplies this automatically.
+    /// Plugin Release 根目录；Codex skill 会自动提供。
     #[arg(long)]
     source: Option<PathBuf>,
-    /// Codex home to manage. Prefer CODEX_HOME when testing or integrating.
+    /// 要管理的 Codex home；测试或集成时优先使用 CODEX_HOME。
     #[arg(long)]
     codex_home: Option<PathBuf>,
+    /// 显示帮助。
+    #[arg(
+        short = 'h',
+        long = "help",
+        action = clap::ArgAction::Help,
+        global = true,
+        required = false
+    )]
+    _help: Option<bool>,
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -30,12 +46,12 @@ enum CliCommand {
     Recover,
     Rollback,
     Uninstall,
-    /// Inspect or manage the persistent user tier-to-model override.
+    /// 查看或管理持久用户 tier-to-model override。
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
     },
-    /// Explicitly opt in to the safe automatic approval reviewer policy.
+    /// 显式选择启用 Safe Auto 审批 reviewer policy。
     SafeAuto {
         #[command(subcommand)]
         command: SafeAutoCommand,
@@ -44,17 +60,17 @@ enum CliCommand {
 
 #[derive(Subcommand)]
 enum ProfileCommand {
-    /// Show the effective routing mapping and its source.
+    /// 显示有效路由 mapping 及其来源。
     Show,
-    /// Create an editable user override from the shipped active default.
+    /// 根据随附的活动默认值创建可编辑 user override。
     Init,
-    /// Validate the effective routing mapping without changing it.
+    /// 验证有效路由 mapping，不做修改。
     Validate,
-    /// Back up and remove the user override so the shipped default is active again.
+    /// 备份并移除 user override，使随附默认值重新生效。
     Reset,
-    /// Restore a reset backup from the managed backup directory.
+    /// 从受管 backup 目录恢复 reset backup。
     Restore { backup: PathBuf },
-    /// Set one tier in a validated persistent user override.
+    /// 在已验证的持久 user override 中设置一个 tier。
     Set {
         tier: String,
         model: String,
@@ -64,15 +80,15 @@ enum ProfileCommand {
 
 #[derive(Subcommand)]
 enum SafeAutoCommand {
-    /// Apply the three-key safe automatic approval policy.
+    /// 应用三键 Safe Auto 审批 policy。
     Enable,
-    /// Restore only the three keys' pre-enable values (alias: restore).
+    /// 只恢复三个键启用前的值（restore 的别名）。
     Disable,
-    /// Restore only the three keys' pre-enable values.
+    /// 只恢复三个键启用前的值。
     Restore,
-    /// Report active, drift, or absent state without changing files.
+    /// 报告 active、drift 或 absent 状态，不修改文件。
     Status,
-    /// Verify active state and fail closed on drift.
+    /// 验证 active 状态，发现 drift 时 fail closed。
     Doctor,
 }
 

@@ -27,7 +27,7 @@ ARCHIVES = {
 }
 SUPPORT = {"install.sh", "install.ps1", "AGENT_INSTALL.md"}
 EXPECTED = ARCHIVES | SUPPORT | {"SHA256SUMS"}
-CURRENT_VERSION = "1.0.3"
+CURRENT_VERSION = "1.0.0"
 
 
 def sha256(path: Path) -> str:

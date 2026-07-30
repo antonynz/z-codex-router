@@ -1,7 +1,7 @@
 {
   "name": "z-codex-router",
-  "version": "1.0.3",
-  "description": "A local, fail-closed router policy for Codex tasks.",
+  "version": "1.0.0",
+  "description": "面向 Codex 任务的本地 fail-closed 路由策略。",
   "author": {
     "name": "antonynz"
   },
@@ -17,33 +17,35 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Z Codex Router",
-    "shortDescription": "Install, enable, recover, and remove a safe task router.",
-    "longDescription": "Install and enable, inspect, recover, safely upgrade, or cleanly remove a portable global routing policy for Codex.",
+    "shortDescription": "安全安装、启用、恢复与移除任务路由。",
+    "longDescription": "安装并启用、检查、恢复、安全升级或干净移除可移植的 Codex 全局路由策略。",
     "developerName": "antonynz",
     "category": "Productivity",
     "capabilities": [
-      "Local configuration",
-      "Validation",
-      "Recovery",
-      "Safe uninstallation",
-      "Explicit safe-auto approval opt-in",
-      "Parent-owned route receipts and tri-state runtime verification",
-      "Versioned legacy upgrade migration",
-      "Persistent validated tier-to-model user overrides",
-      "Desktop-policy-aware independent-root handoff"
+      "本地配置",
+      "校验",
+      "恢复",
+      "安全卸载",
+      "显式 Safe Auto 审批 opt-in",
+      "父协调 route receipt 与运行时三态校验",
+      "事务化版本升级",
+      "持久且经过校验的 tier-to-model 用户 override",
+      "完整 hash-managed 全局路由合同",
+      "启用范围内的持久独立根请求",
+      "感知 Desktop policy 的独立根 handoff"
     ],
     "websiteURL": "https://github.com/antonynz/z-codex-router",
     "privacyPolicyURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/privacy.md",
     "termsOfServiceURL": "https://github.com/antonynz/z-codex-router/blob/main/docs/terms.md",
     "defaultPrompt": [
-      "Install and enable Z Codex Router globally.",
-      "Check my Z Codex Router installation.",
-      "Validate a parent-owned route receipt and runtime observability boundary.",
-      "Show or validate my Z Codex Router effective profile mapping; initialize, set, reset, or restore an override only when I explicitly request it, using a managed backup rather than a manual overwrite.",
-      "When desktop policy requires an explicit new task before create_thread, stop with ROUTE_HANDOFF_REQUIRED and return the direct receipt-preserving new-task command; never fall back to spawn_agent.",
-      "Only when I explicitly ask, enable, check, or restore Z Codex Router's safe-auto approval policy without widening its sandbox or human-authorization boundary.",
-      "Safely recover Z Codex Router after a failed action.",
-      "Safely disable and uninstall Z Codex Router."
+      "全局安装并启用 Z Codex Router。",
+      "检查我的 Z Codex Router 安装。",
+      "校验父协调 route receipt 与运行时可观测性边界。",
+      "显示或校验 Z Codex Router 的有效 profile mapping；只有我明确要求时才 init、set、reset 或 restore override，并使用受管 backup，不要手工覆盖。",
+      "安装完整 hash-managed 全局路由合同；将明确 install/enable 或 upgrade 视为至多一次精确 create_thread 的持久请求。只有更严格的 host policy 拒绝持久请求时才再次询问，绝不 fallback 到 spawn_agent。",
+      "只有我明确要求时，才启用、检查或恢复 Z Codex Router 的 Safe Auto 审批策略；不得扩大 sandbox 或人类授权边界。",
+      "在 Z Codex Router 操作失败后安全恢复。",
+      "安全停用并卸载 Z Codex Router。"
     ],
     "brandColor": "#2463EB"
   }

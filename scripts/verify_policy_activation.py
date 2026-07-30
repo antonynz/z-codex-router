@@ -45,7 +45,7 @@ EXPECTED_ROUTING = {
     "C2": ("gpt-5.6-terra", "max"),
     "C3": ("gpt-5.6-sol", "max"),
 }
-CURRENT_VERSION = "1.0.3"
+CURRENT_VERSION = "1.0.0"
 PROFILE_OVERRIDE = {
     "path": "z-codex-router-profile.toml",
     "precedence": "explicit-user-session-cli>validated-user-override>shipped-default",
@@ -53,6 +53,18 @@ PROFILE_OVERRIDE = {
     "runtimeAllowlist": "create-thread-intersection-fail-closed",
     "reset": "backup-and-remove",
     "restore": "managed-backup-only-validate-atomic",
+}
+INDEPENDENT_ROOT_AUTHORIZATION = {
+    "source": "explicit-install-enable-or-upgrade-managed-block",
+    "scope": "one-per-task-exact-route",
+    "repeatConfirmation": "not-required-when-host-accepts-durable-request",
+    "policyConflict": "route-handoff-required",
+}
+PORTABLE_INDEPENDENT_ROOT_AUTHORIZATION = {
+    "source": "explicit-install-enable-or-upgrade-managed-block",
+    "scope": "one-per-task-exact-route",
+    "repeat_confirmation": "not-required-when-host-accepts-durable-request",
+    "policy_conflict": "route-handoff-required",
 }
 
 
@@ -109,6 +121,11 @@ def verify_contract(plugin: Path) -> None:
         fail("compatibility metadata does not describe the explicit safe-auto config boundary")
     if compatibility.get("installer", {}).get("profileOverride") != PROFILE_OVERRIDE:
         fail("compatibility metadata does not describe the persistent profile override boundary")
+    if (
+        compatibility.get("installer", {}).get("independentRootAuthorization")
+        != INDEPENDENT_ROOT_AUTHORIZATION
+    ):
+        fail("compatibility metadata does not describe the independent-root authorization boundary")
 
     required = [
         "core/router.md",
@@ -154,6 +171,11 @@ def verify_contract(plugin: Path) -> None:
         "restore": "managed-backup-only-validate-atomic",
     }:
         fail("portable profile does not declare the persistent override boundary")
+    if (
+        portable.get("independent_root_authorization")
+        != PORTABLE_INDEPENDENT_ROOT_AUTHORIZATION
+    ):
+        fail("portable profile does not declare the independent-root authorization boundary")
     receipt = portable.get("receipt", {})
     expected_receipt = {
         "protocol": 1,
@@ -200,6 +222,9 @@ def verify_contract(plugin: Path) -> None:
         "classification_owner=parent",
         "creation_tool=create_thread",
         "automatic_root_creations=1",
+        "持久、受限的独立根创建请求",
+        "不得要求用户重复确认",
+        "只有当宿主策略明确要求当前轮用户消息中的新任务请求",
         "requested/accepted，不声称 actual verified",
         "C3/高风险",
         "route exception",
@@ -225,7 +250,7 @@ def verify_contract(plugin: Path) -> None:
         "E_SAFE_AUTO_TRANSACTION_PENDING",
         "safe-auto doctor",
         "E_SAFE_AUTO_ACTIVE",
-        "Persistent user profile override",
+        "持久用户 profile override",
         "z-codex-router-profile.toml",
         "ROUTE_PROFILE_RUNTIME_UNAVAILABLE",
         "ROUTE_HANDOFF_REQUIRED",
@@ -234,7 +259,6 @@ def verify_contract(plugin: Path) -> None:
         "spawn_agent` fallback",
         "final topology disclosure",
         "请为当前相同任务范围创建一个新的 Codex 独立任务",
-        "Create a new independent Codex task for the same current scope",
         "profile restore <reset 返回的 backup 路径>",
     )
     missing_anchors = [anchor for anchor in anchors if anchor not in router]
@@ -242,7 +266,7 @@ def verify_contract(plugin: Path) -> None:
         fail(f"portable router contract is missing anchors: {missing_anchors}")
 
     engineering = (plugin / "core/modes/engineering.md").read_text()
-    for marker in ("Web Frontend", "Flutter", "Android", "iOS", "HarmonyOS NEXT"):
+    for marker in ("Web 前端", "Flutter", "Android", "iOS", "HarmonyOS NEXT"):
         if marker not in engineering:
             fail(f"engineering mode lacks platform acceptance section: {marker}")
 
@@ -299,6 +323,18 @@ def run_routerctl_fixture(plugin: Path, binary: Path) -> None:
 
         run("install")
         verify_active_chain(home, plugin)
+        managed = (home / "AGENTS.md").read_text()
+        for marker in (
+            "## 全局路由",
+            "本条是用户对符合上述路由条件时创建新/后台独立模型根会话的持久明确授权",
+            "创建前的 commentary 是信息披露，不是批准请求",
+            "工具明确接受授权时不得要求用户重复确认",
+            "若 `create_thread` 未直接暴露，先通过 `tool_search` 定向发现",
+            "同一任务最多自动创建一次独立根任务",
+            "外部不可逆动作，必须由具备权限的人明确确认并实际执行",
+        ):
+            if marker not in managed:
+                fail(f"managed block lacks independent-root authorization boundary: {marker}")
         before = (home / "config.toml").read_text()
         if "sandbox_mode" in before:
             fail("routing install modified config.toml")

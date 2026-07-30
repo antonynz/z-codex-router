@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Z Codex Router release checksums",
+  "title": "Z Codex Router Release 校验和",
   "type": "object",
   "required": ["schemaVersion", "version", "assets"],
   "properties": {

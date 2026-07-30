@@ -6,7 +6,7 @@
 
 **为每个 Codex 任务精确选择正确模型：可审计、可升级、验证失败即停止。**
 
-Version / 版本：`1.0.3`
+Version / 版本：`1.0.0`
 
 ## 中文
 
@@ -19,8 +19,10 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 1. **先判 tier：** A0–C3 表达副作用、任务明确度、影响面、状态复杂度与风险。
 2. **再选 mode：** Engineering、Product、Business Operations、Design、Testing 等 mode
    定义领域边界与验收证据。
-3. **父协调与 receipt：** 只有父协调根分类并在实际 `create_thread` 前写入 protocol 1
-   receipt；子线程不重分类、不递归创建，自动根创建最多一次，thread ID 只来自工具返回。
+3. **完整全局合同与父 receipt：** v1.0.0 的 hash-managed `AGENTS.md` block 写入完整十条
+   “全局路由”合同；明确的 install/enable 或 upgrade 同时成为持久的新/后台独立根任务请求。
+   工具接受时 commentary 只披露并立即调用一次 `create_thread`，不再次索取确认。只有父协调根
+   分类并写入 protocol 1 receipt；子线程不重分类、不递归创建，thread ID 只来自工具返回。
 4. **三态校验：** 可见且 exact 为 `verified`，可见不一致为 `mismatch` 并 fail closed；字段
    缺失/接口不可用明确记为 `runtime_observability=unobservable`。非 C3 可在工具已接受目标
    tuple 且无 reroute/failure 证据时按 requested/accepted 继续，但不声称 actual verified；C3
@@ -37,7 +39,9 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 > 请从 https://github.com/antonynz/z-codex-router 的公开 GitHub Release 安装并启用 Z Codex
 > Router。不要要求我安装 CLI 或手工执行命令；不要 clone 仓库、不要使用 GitHub API；严格按 AGENT_INSTALL.md
 > 自动识别当前平台，只下载一个匹配的预编译包和 SHA256SUMS，校验后安装到持久 source，
-> 执行 dry-run、启用和 Doctor，并回报耗时、下载字节与结果。测试不得写真实 Codex home；如果
+> 执行 dry-run、启用和 Doctor；确认受管 `AGENTS.md` block 包含完整“全局路由”合同及持久
+> `create_thread` 请求，并回报耗时、下载字节与结果。该请求最多创建一个同 scope 的精确独立根任务，
+> 不授权 sub-agent、第二任务或外部不可逆动作。测试不得写真实 Codex home；如果
 > 此会话只能安装插件或需要新会话，明确回报“已安装但未启用”及唯一下一步“调用 Enable Z Codex
 > Router”。
 
@@ -53,10 +57,11 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 #### 升级（不要先卸载）
 
 > 请从 Z Codex Router 的 latest public GitHub Release 升级并启用现有安装。不要先卸载、不要手工编辑
-> `AGENTS.md`、不要删除旧版本或 Safe Auto；使用 latest bootstrap 安装新插件后，让**新 launcher**执行
-> `upgrade --dry-run`、`upgrade` 和 Doctor。它必须识别健康的 1.0.1/1.0.2 受管 payload 与旧 managed block，
+> `AGENTS.md`、不要删除当前安装或 Safe Auto；使用 latest bootstrap 安装新插件后，让**新 launcher**执行
+> `upgrade --dry-run`、`upgrade` 和 Doctor。它必须按当前合同验证受管 payload 与 managed block，
 > 原子替换为新版本，同时逐字保留我的 user `AGENTS.md` 内容、`config.toml`、Safe Auto 三键状态和
-> `z-codex-router-profile.toml` user override。若发现真正的受管内容 drift、损坏 profile 或中断事务，停止并
+> `z-codex-router-profile.toml` user override，并确认新 block 包含完整十条“全局路由”合同。若发现真正的
+> 受管内容 drift、损坏 profile 或中断事务，停止并
 > 报告稳定错误码和 Recover 路径；无效 override 也必须以 `E_PROFILE_OVERRIDE_INVALID` 停止，先修复或显式
 > `profile reset` 后再试。不得以 uninstall-first、`spawn_agent` 或手工覆盖绕过。
 
@@ -67,8 +72,10 @@ Z Codex Router 是一个 skills-only Codex 插件。把
 
 > 显示并验证我的有效 Z Codex Router tier mapping；除非我明确要求，不要写 override。若我要求修改，使用
 > `profile init`、`profile set`、可恢复的 `profile reset` 或 `profile restore <backup>`，并报告 source、path 和
-> mapping hash。`profile reset` 返回的 backup 只能用 `profile restore` 恢复，不能手工覆盖文件。若 desktop policy
-> 阻止创建独立根任务，停止并返回 `ROUTE_HANDOFF_REQUIRED`；不要 fallback 到 `spawn_agent`。我随后会直接请求：
+> mapping hash。`profile reset` 返回的 backup 只能用 `profile restore` 恢复，不能手工覆盖文件。完整且身份匹配的
+> v1.0.0 受管 block 已是持久明确请求；若工具策略接受，commentary 后直接调用 `create_thread`，不要再次确认。
+> 只有 desktop/tool policy 明确拒绝该请求、要求当前轮请求、调用失败或工具不可用时才停止并返回对应 route
+> exception；不要 fallback 到 `spawn_agent`。需要 handoff 时只给出：
 > `请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。`
 
 #### 恢复或回滚
@@ -142,9 +149,12 @@ packages for other platforms.
    risk.
 2. **Choose the mode:** Engineering, Product, Business Operations, Design, Testing, and other modes
    define domain boundaries and acceptance evidence.
-3. **Parent-owned receipts:** only the coordinating parent classifies and writes a protocol-1 receipt
-   before the real `create_thread` call. Children never reclassify or recurse, automatic root creation
-   is capped at one, and thread IDs come only from the tool return.
+3. **Complete global contract and parent-owned receipts:** v1.0.0 writes the complete ten-rule global
+   routing contract into the hash-managed `AGENTS.md` block. An explicit install/enable or upgrade is
+   also the durable request for one exact new/background independent root. When the tool accepts it,
+   commentary is disclosure and the parent calls `create_thread` without asking again. Only the
+   coordinating parent classifies and writes protocol-1 receipts; children never reclassify or recurse,
+   and thread IDs come only from the tool return.
 4. **Three-state verification:** observable exact fields are `verified`; visible differences are
    `mismatch` and fail closed; missing/unavailable fields are explicitly
    `runtime_observability=unobservable`. Non-C3 work may continue as requested/accepted (without
@@ -165,7 +175,10 @@ packages for other platforms.
 > do not clone the repository or use the GitHub API. Follow AGENT_INSTALL.md exactly: detect this
 > host, download only its one prebuilt
 > package plus SHA256SUMS, verify it, install a persistent source, run dry-run, enable, and Doctor,
-> then report elapsed time, downloaded bytes, and results. Never target my real Codex home in tests.
+> confirm that the managed `AGENTS.md` block contains the complete global-routing contract and durable
+> `create_thread` request, then report elapsed time, downloaded bytes, and results. The request permits
+> at most one exact independent root for the same scope; it does not authorize sub-agents, a second task,
+> or external irreversible actions. Never target my real Codex home in tests.
 > If this session can only install the plugin or needs a new session, explicitly report “installed
 > but not enabled” and the single next step: invoke Enable Z Codex Router.
 
@@ -184,9 +197,10 @@ packages for other platforms.
 > Upgrade and enable my existing Z Codex Router from the latest public GitHub Release. Do not uninstall
 > first, hand-edit `AGENTS.md`, delete the old version, or change Safe Auto. After the latest bootstrap
 > installs the new plugin, use the **new launcher** for `upgrade --dry-run`, `upgrade`, and Doctor. It
-> must recognize healthy 1.0.1/1.0.2 managed payloads and legacy blocks, atomically replace them with the
+> must validate managed payloads and blocks against the current contract, atomically replace them with the
 > new version, and preserve my user `AGENTS.md` content, `config.toml`, Safe Auto three-key state, and
-> `z-codex-router-profile.toml` override byte-for-byte. On genuine managed drift, malformed legacy profile,
+> `z-codex-router-profile.toml` override byte-for-byte while installing the complete ten-rule
+> global-routing contract. On genuine managed drift, a malformed profile,
 > an invalid override, or an interrupted transaction, stop with the stable error and Recover path (repair or
 > explicitly `profile reset` an invalid override before retry); never use uninstall-first,
 > `spawn_agent`, or a manual overwrite to bypass it.
@@ -200,8 +214,11 @@ context. Start a new task to pick up updated plugin skills and tools.
 > Show and validate my effective Z Codex Router tier mapping; do not write an override unless I explicitly
 > ask. If I request a change, use `profile init`, `profile set`, recoverable `profile reset`, or
 > `profile restore <backup>`, and report source, path, and mapping hash. A reset backup must be restored with
-> `profile restore`, never by manually overwriting the file. If desktop policy blocks the independent-root
-> creation, stop with `ROUTE_HANDOFF_REQUIRED`; never fall back to `spawn_agent`. I will then directly request:
+> `profile restore`, never by manually overwriting the file. An intact, identity-matched v1.0.0 managed
+> block is already my durable explicit request: when tool policy accepts it, disclose in commentary and call
+> `create_thread` without asking again. Only when desktop/tool policy explicitly rejects that request,
+> requires a current-turn request, the call fails, or the tool is unavailable, stop with the corresponding
+> route exception; never fall back to `spawn_agent`. If handoff is required, return only:
 > `Create a new independent Codex task for the same current scope using <model> / <effort>, carrying forward the current route receipt; do not create a sub-agent or a second task.`
 
 #### Recover or roll back

@@ -24,6 +24,12 @@
       "reset": "backup-and-remove",
       "restore": "managed-backup-only-validate-atomic"
     },
+    "independentRootAuthorization": {
+      "source": "explicit-install-enable-or-upgrade-managed-block",
+      "scope": "one-per-task-exact-route",
+      "repeatConfirmation": "not-required-when-host-accepts-durable-request",
+      "policyConflict": "route-handoff-required"
+    },
     "failureMode": "closed"
   }
 }

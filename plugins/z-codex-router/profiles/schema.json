@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Z Codex Router profile",
+  "title": "Z Codex Router 配置档",
   "type": "object",
   "required": ["schema_version", "metadata", "compatibility", "routing"],
   "properties": {

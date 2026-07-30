@@ -96,7 +96,7 @@ exit /b 0
         throw "release fixture version is invalid"
     }
     $releaseBaseUrl = "https://fixtures.example/v$releaseVersion"
-    $wrongVersion = if ($releaseVersion -eq "1.0.0") { "1.0.1" } else { "1.0.0" }
+    $wrongVersion = if ($releaseVersion -eq "1.0.0") { "9.9.9" } else { "1.0.0" }
 
     $codexHome = Join-Path $testRoot "codex-home"
     $arguments = @{

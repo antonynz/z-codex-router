@@ -1,44 +1,52 @@
-# Marketplace review materials (template)
+# Marketplace 审核材料模板
 
-This is a draft for a future reviewer. It intentionally contains no authentication claims and must not be represented as a submitted or approved listing.
+这是供未来 reviewer 使用的草稿，刻意不包含 authentication 声明；不得把它描述为已提交或已获批的 listing。
 
-## Listing copy
+## 上架文案
 
 **Name:** Z Codex Router
 
-**Short description:** Enable a portable, fail-closed global routing policy for Codex.
+**Short description:** 为 Codex 启用可移植、fail-closed 的全局路由策略。
 
-**Long description:** Z Codex Router installs a versioned global task-routing policy through a one-click Codex skill. It dry-runs first, preserves user-owned configuration, validates profiles and hashes, keeps candidates disabled, and offers doctor, upgrade, rollback, and uninstall controls.
+**Long description:** Z Codex Router 通过一键 Codex skill 安装版本化全局任务路由策略。它先执行
+dry-run，保留用户配置，校验 profile 与 hash，保持 candidate disabled，并提供 Doctor、upgrade、
+rollback 与 uninstall 控制。
 
-## Starter prompts
+## 起始提示词
 
-1. Enable Z Codex Router globally.
-2. Check my Z Codex Router installation.
-3. Safely upgrade Z Codex Router.
+1. 全局启用 Z Codex Router。
+2. 检查我的 Z Codex Router 安装。
+3. 安全升级 Z Codex Router。
 
-## Positive test cases
+## 正向测试
 
-1. Fresh temporary Codex home: enable succeeds, creates a versioned payload and one managed block.
-2. Existing `AGENTS.md`: enable retains all user lines and appends only the identified block.
-3. Existing complex `config.toml` with an `[agents]` table: record its bytes, then enable, doctor, same-version re-enable, and uninstall; its bytes remain identical after every action.
-4. Same-version re-enable: returns a no-change result with no file-content diff.
-5. Newer stable fixture: upgrade creates a backup, swaps the current pointer, and rollback restores the prior state.
+1. 新临时 Codex home：enable 成功，创建版本化 payload 与一个 managed block。
+2. 已有 `AGENTS.md`：enable 保留全部用户行，只追加带身份标识的 block。
+3. 已有复杂 `config.toml`（含 `[agents]` table）：记录 bytes，再依次 enable、Doctor、同版本
+   re-enable 与 uninstall；每次操作后 bytes 均保持一致。
+4. 同版本 re-enable：返回 no-change，文件内容无 diff。
+5. 更新 stable fixture：upgrade 创建 backup 并切换 current pointer，rollback 恢复先前 state。
 
-## Negative test cases
+## 负向测试
 
-1. Edited managed block: doctor and upgrade stop with `E_MANAGED_BLOCK_DRIFT`.
-2. Missing portable profile, enabled candidate, or missing required mode/role: preflight fails closed with `E_PROFILE_INCOMPATIBLE`.
-3. Dangerous `CODEX_HOME` (path traversal, filesystem root, or the real user home): preflight fails closed with `E_PATH_INVALID` or `E_CODEX_HOME_DANGEROUS`.
+1. 修改 managed block：Doctor 与 upgrade 以 `E_MANAGED_BLOCK_DRIFT` 停止。
+2. portable profile 缺失、candidate 被启用，或必需 mode/role 缺失：preflight 以
+   `E_PROFILE_INCOMPATIBLE` fail closed。
+3. 危险 `CODEX_HOME`（path traversal、filesystem root 或真实 user home）：preflight 以
+   `E_PATH_INVALID` 或 `E_CODEX_HOME_DANGEROUS` fail closed。
 
-## Draft release notes
+## 发布说明草稿
 
-Z Codex Router 1.0.0 introduces a skills-only local router plugin with a Rust control plane, portable policy core, reference and disabled-candidate profiles, seven parameterized role templates, an untouched-1.0.0 `config.toml` boundary, immutable version directories, transaction backup/rollback, and fixture coverage. This draft does not announce a marketplace listing or OpenAI review.
+Z Codex Router 1.0.0 提供 skills-only 本地 router plugin、Rust control plane、可移植 policy core、
+reference 与 disabled-candidate profile、七个参数化 role template、普通 install/enable 不触碰
+`config.toml` 的边界、不可变版本目录、事务 backup/rollback、完整十条全局路由合同、持久
+`create_thread` 请求与 fixture 覆盖。本草稿不表示 Marketplace listing 或 OpenAI review 已发生。
 
-## Pre-submission checklist
+## 提交前检查
 
-- [ ] Confirm the release package includes the matching platform binary and a checksum manifest.
-- [ ] Confirm source, plugin, skill, fixture, secret, and path scans pass in a clean checkout.
-- [ ] Confirm privacy, terms, support, version, license, and publisher information are accurate.
-- [ ] Confirm no credentials, authentication assertions, personal paths, or real configuration are included.
-- [ ] Confirm a qualified publisher, not an agent, submits and accepts the marketplace terms.
-- [ ] Confirm no listing copy claims OpenAI review, approval, endorsement, or publication before it happens.
+- [ ] release package 包含匹配平台 binary 与 checksum manifest。
+- [ ] clean checkout 中 source、plugin、skill、fixture、secret 与 path scan 全部通过。
+- [ ] privacy、terms、support、version、license 与 publisher 信息准确。
+- [ ] 不包含凭证、authentication 声明、个人路径或真实配置。
+- [ ] 由具备资格的人类 publisher（不是 Agent）提交并接受 Marketplace terms。
+- [ ] 实际发生前，任何 listing 文案都不声称 OpenAI 已审核、批准、背书或发布。

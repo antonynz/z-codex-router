@@ -1,5 +1,7 @@
-# Parameterized role templates
+# 参数化角色模板
 
-These templates are data, not an automatic delegation policy. A host may render `{{model}}`, `{{reasoning_effort}}`, `{{task_scope}}`, `{{owned_paths}}`, and `{{acceptance}}` only after the resolved profile and real runtime capabilities have been verified. If a host cannot substitute or enforce a field, it must not activate that template.
+这些模板只是数据，不是自动委派策略。只有 resolved profile 与真实 runtime capability 均通过校验后，
+host 才可渲染 `{{model}}`、`{{reasoning_effort}}`、`{{task_scope}}`、`{{owned_paths}}` 和
+`{{acceptance}}`。若 host 无法替换或强制执行某字段，就不得启用对应模板。
 
-No template grants authority to approve, sign, pay, publish, manage accounts, or make legal/financial decisions.
+任何模板都不授予审批、签署、支付、发布、管理账户或作出法律/财务决策的权限。

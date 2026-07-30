@@ -3,11 +3,11 @@ schema_version = 1
 [metadata]
 name = "portable-default"
 status = "stable"
-purpose = "Select only an explicitly compatible stable profile; fail closed otherwise."
+purpose = "只选择明确兼容的 stable profile；否则 fail closed。"
 
 [preflight]
-## Runtime metadata is tri-state: missing fields are explicitly unobservable,
-## not a mismatch. Exact matching remains mandatory whenever fields are visible.
+## Runtime metadata 使用三态：缺失字段明确视为 unobservable，而不是 mismatch。
+## 字段可见时仍必须精确匹配。
 require_explicit_runtime_metadata = false
 require_exact_route_match = true
 require_platform_capability = true
@@ -34,6 +34,14 @@ observable_mismatch = "mismatch-fail-closed"
 unobservable_non_c3 = "requested-accepted-unverified"
 unobservable_c3 = "block-until-explicit-one-time-route-exception"
 
+[independent_root_authorization]
+## 精确受管 AGENTS.md block 记录用户明确的 install/enable 或 upgrade 请求。
+## 更严格的 host policy 仍然优先，并要求 handoff。
+source = "explicit-install-enable-or-upgrade-managed-block"
+scope = "one-per-task-exact-route"
+repeat_confirmation = "not-required-when-host-accepts-durable-request"
+policy_conflict = "route-handoff-required"
+
 [selection]
 stable_profile = "stable/current-gpt-5.6-reference.toml"
 candidate_profiles = ["candidate/example-next-model.toml"]
@@ -41,8 +49,8 @@ allow_candidate_as_default = false
 silent_fallback = false
 
 [profile_override]
-## This file is deliberately outside immutable version payloads. A malformed
-## override never falls back silently to this shipped mapping.
+## 本文件有意位于不可变版本 payload 之外。
+## override 格式错误时，绝不静默 fallback 到此随附 mapping。
 user_path = "z-codex-router-profile.toml"
 precedence = ["explicit-user-session-cli", "validated-user-override", "shipped-default"]
 invalid = "fail-closed"

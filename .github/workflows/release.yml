@@ -1,10 +1,10 @@
-name: Release package
+name: Release 打包
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Version tag to package after maintainer approval
+        description: 维护者批准后要打包的版本标签
         required: true
   push:
     branches: [main]
@@ -36,11 +36,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Build release binary
+      - name: 构建 Release 二进制
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
         run: cargo build --locked --release --target "${{ matrix.rust_target }}"
-      - name: Stage plugin asset
+      - name: 暂存 plugin asset
         shell: bash
         run: |
           binary="target/${{ matrix.rust_target }}/release/routerctl"
@@ -51,7 +51,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out "dist/${{ matrix.platform }}-${{ matrix.arch }}" \
             --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
-      - name: Test POSIX bootstrap with native package
+      - name: 使用原生 package 测试 POSIX bootstrap
         if: matrix.platform != 'windows'
         shell: bash
         run: |
@@ -60,7 +60,7 @@ jobs:
             --archive "dist/z-codex-router-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
-      - name: Test PowerShell bootstrap with native package
+      - name: 使用原生 package 测试 PowerShell bootstrap
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
@@ -89,7 +89,7 @@ jobs:
           pattern: z-codex-router-*
           path: dist
           merge-multiple: true
-      - name: Verify tag and assemble public assets
+      - name: 验证标签并组装公开 assets
         shell: bash
         run: |
           python3 - <<'PY'
@@ -120,7 +120,7 @@ jobs:
               sort -k2 > SHA256SUMS
           )
           python3 scripts/verify_release_assets.py dist
-      - name: Create public GitHub Release
+      - name: 创建公开 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
