@@ -15,8 +15,9 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 - 非空全局 `AGENTS.override.md` 会遮蔽 `AGENTS.md`；安装必须返回
   `E_GLOBAL_OVERRIDE_ACTIVE`，不得修改 override。
 - 旧 Rust/prebuilt state 不迁移、不覆盖。只允许显式 legacy cleanup 后 fresh install。
-- 用户明确执行 `--enable` / `-Enable` 即持续授权 Router 仅为路由调用 `create_thread`，直到卸载；
-  该授权不涵盖发布、生产变更或其他外部副作用。
+- 用户明确执行 `--enable` / `-Enable` 即持续授权 Router 为路由调用一次 `create_thread`，并仅用
+  `list_threads` / `wait_threads` / `send_message_to_thread` 解析和协调该同一任务，直到卸载；
+  该授权不涵盖对外发送、发布、生产变更或其他外部副作用。
 
 ## Release 资产与校验
 
@@ -227,6 +228,14 @@ profile effort 映射到工具 `thinking` 参数。有效 receipt 执行根直�
 
 Pending 与 unknown 禁止重试。任何分支都禁止自动降级、当前任务代做、第二个根或 `spawn_agent`
 fallback。只有工具明确报告 tuple unsupported 才能作该结论。
+
+Ready 与 pending 都进入父协调 monitor。创建前生成唯一 correlation token 并写入 title/prompt。
+Pending 优先宿主显式 resolve；否则只接受 token+host+project/cwd+createdAt 时间窗全匹配且唯一的
+`list_threads` 结果。Title/preview 不可信，只能做 token 等值关联；0 个匹配继续有界等待，多匹配或
+超期进入 outcome-unknown needs-attention，绝不重建。取得真实 threadId 后，父使用 cursor 增量和
+有界 timeout 的 `wait_threads`，只转述有意义的新进展。偏差、阻塞或缺少验收证据时，父纠偏同一
+thread 并省略 model/thinking；用户输入请求交还用户。最终完成前必须核对 acceptance、测试与保护
+路径。
 
 ## 验收
 

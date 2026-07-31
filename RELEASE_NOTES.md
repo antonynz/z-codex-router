@@ -23,6 +23,9 @@
 - 任务创建结果区分 `ROUTE_READY`、`ROUTE_PENDING`、`ROUTE_HANDOFF_REQUIRED`、
   `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`、`ROUTE_INPUT_REJECTED` 与
   `ROUTE_OUTCOME_UNKNOWN`；pending/unknown 禁止重试。
+- Ready 与 pending 都进入父协调 monitor。Pending 用父生成 token、host、project/cwd 与 createdAt
+  时间窗唯一解析，取得 threadId 后以 `wait_threads` cursor 增量等待；只回传新进展，偏差、阻塞或
+  验收证据不足时纠偏同一任务，用户输入请求交还用户。
 - 公开 manifest/tag/Release 保持 `1.0.0`；本地 Codex marketplace cache 允许
   `1.0.0+codex.<timestamp>`。
 - Git 历史已重写以清除所有编译可执行 blob。现有 clone 应重新 clone，或显式重新获取并重置到新

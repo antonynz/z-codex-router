@@ -36,18 +36,34 @@ unobservable_c3 = "block-until-explicit-one-time-route-exception"
 
 [creation]
 authorization = "managed-enable-persistent-until-uninstall"
-authorization_scope = "route-root-create-thread-only"
+authorization_scope = "route-root-create-resolve-and-coordinate-same-thread-only"
 dispatch = "A0-current-root;A1-C3-create-once"
 execution_root = "valid-parent-receipt-execute-no-recursion"
 model_effort_parameter = "model+thinking"
-ready = "threadId:ROUTE_READY"
-pending = "clientThreadId:ROUTE_PENDING-no-retry"
+ready = "threadId:ROUTE_READY-monitor"
+pending = "clientThreadId:ROUTE_PENDING-monitor-no-retry"
 policy_denied = "ROUTE_HANDOFF_REQUIRED"
 destination_tuple_denied = "ROUTE_DESTINATION_TUPLE_UNAVAILABLE"
 input_rejected = "ROUTE_INPUT_REJECTED"
 outcome_unknown = "ROUTE_OUTCOME_UNKNOWN-no-retry"
 silent_fallback = false
 spawn_agent_fallback = false
+
+[coordination]
+monitor_entry = ["ROUTE_READY", "ROUTE_PENDING"]
+terminal_states = ["completed", "needs-attention", "failed"]
+correlation = "parent-generated-unique-token-in-title-and-prompt"
+pending_resolution = "explicit-resolve-or-unique-list-match"
+pending_match = ["token", "hostId", "project-or-cwd", "createdAt-window"]
+untrusted_summary_fields = ["title", "description", "preview"]
+pending_zero_matches = "bounded-wait"
+pending_ambiguous_or_expired = "ROUTE_OUTCOME_UNKNOWN-needs-attention-no-retry"
+wait = "wait_threads-single-target-cursor-bounded-timeout"
+commentary_wakeup = false
+progress_reporting = "new-meaningful-progress-only"
+correction = "send_message_to_thread-same-thread-preserve-model-thinking"
+user_input = "relay-to-user-never-answer-for-user"
+completion_gate = "acceptance-tests-protection-paths"
 
 [selection]
 stable_profile = "stable/current-gpt-5.6-reference.toml"

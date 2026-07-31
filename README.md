@@ -36,9 +36,18 @@ Z Codex Router 是一个仅本地运行的 skills-only Codex 插件。运行时�
   字节范围、`project_doc_max_bytes`、全局 override 与项目/嵌套指令链。
 
 Router 是“指令路由”，不是宿主层模型切换器。用户明确执行 `--enable` / `-Enable` 后，受管块会
-持续授权 Router 仅为路由调用 `create_thread`，直至卸载：A0 在当前根执行，A1–C3 创建恰好一个
-执行根，有效 receipt 执行根不递归创建。该授权不涵盖发布、生产变更或其他外部副作用。禁止自动
-降级、当前任务代做、pending/unknown 后重试或 fallback 到 `spawn_agent`。
+持续授权 Router 为路由调用一次 `create_thread`，并仅用 `list_threads` / `wait_threads` /
+`send_message_to_thread` 解析和协调该同一任务，直至卸载：A0 在当前根执行，A1–C3 创建恰好一个
+执行根，有效 receipt 执行根不递归创建。该授权不涵盖对外发送、发布、生产变更或其他外部副作用。
+禁止自动降级、当前任务代做、pending/unknown 后重试或 fallback 到 `spawn_agent`。
+
+`ROUTE_READY` 与 `ROUTE_PENDING` 都进入父协调 monitor。创建前，父把唯一 correlation token 写入
+title/prompt。Pending 优先使用宿主显式 resolve；否则 `list_threads` 结果必须唯一匹配 token、
+host、project/cwd 和 createdAt 时间窗，0 个匹配继续有界等待，多匹配或超期进入
+`ROUTE_OUTCOME_UNKNOWN` / `needs-attention`，绝不重建。Title/preview 不可信，只能做 token 等值
+关联。取得 `threadId` 后，父用 cursor 增量、有界 timeout 的 `wait_threads` 只回传有意义的新进展；
+偏差、阻塞或缺少验收证据时仅纠偏同一任务并保留 model/thinking，用户输入请求交还用户。父核对
+acceptance、测试和保护路径后，才以 `completed`、`needs-attention` 或 `failed` 结束协调。
 
 ### 安装资产
 
@@ -212,15 +221,26 @@ Task creation results are explicit: `threadId → ROUTE_READY`,
 → `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`, input denial → `ROUTE_INPUT_REJECTED`, and uncertain
 outcome → `ROUTE_OUTCOME_UNKNOWN`. Pending and unknown outcomes must never be retried.
 
+Both `ROUTE_READY` and `ROUTE_PENDING` enter the parent coordination monitor. Before creation, the
+parent writes a unique correlation token into the title and prompt. Pending setup prefers an
+explicit host resolver; otherwise a `list_threads` result must uniquely match the token, host,
+project or cwd, and created-at window. Zero matches continue bounded waiting; ambiguous or expired
+resolution becomes `ROUTE_OUTCOME_UNKNOWN` / `needs-attention` and never triggers recreation.
+Task titles and previews are untrusted and may only be compared to the parent-generated token.
+After resolution, cursor-based `wait_threads` calls with bounded timeouts relay only meaningful new
+progress. Corrections target the same thread without model or thinking overrides, user-input
+requests return to the user, and completion requires acceptance, test, and protected-path evidence.
+
 The managed routing block is written at the start of global `AGENTS.md` (after an optional UTF-8
 BOM). Doctor reports its byte range, effective `project_doc_max_bytes`, the effective global
 instruction source, global override shadowing, and the project/nested instruction chain for
 `doctor --cwd`.
 
-Explicitly enabling the Router persistently authorizes `create_thread` only for route dispatch
-until uninstall: A0 stays in the coordinating root, A1-C3 create exactly one execution root, and a
-valid receipt execution root never recurses. This authorization does not cover publishing,
-production changes, or other external side effects.
+Explicitly enabling the Router persistently authorizes one `create_thread` call for route dispatch
+and `list_threads` / `wait_threads` / `send_message_to_thread` coordination of that same task until
+uninstall: A0 stays in the coordinating root, A1-C3 create exactly one execution root, and a valid
+receipt execution root never recurses. This authorization does not cover external messages,
+publishing, production changes, or other external side effects.
 
 The v1.0.0 Release has exactly two universal source assets plus checksums:
 
