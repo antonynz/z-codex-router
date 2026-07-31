@@ -35,7 +35,10 @@ unobservable_non_c3 = "requested-accepted-unverified"
 unobservable_c3 = "block-until-explicit-one-time-route-exception"
 
 [creation]
-authorization = "explicit-current-user-request"
+authorization = "managed-enable-persistent-until-uninstall"
+authorization_scope = "route-root-create-thread-only"
+dispatch = "A0-current-root;A1-C3-create-once"
+execution_root = "valid-parent-receipt-execute-no-recursion"
 model_effort_parameter = "model+thinking"
 ready = "threadId:ROUTE_READY"
 pending = "clientThreadId:ROUTE_PENDING-no-retry"

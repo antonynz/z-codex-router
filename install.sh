@@ -7,7 +7,8 @@ MARKETPLACE_NAME=z-codex-router
 VERSION=1.0.0
 BASE_URL=
 CODEX_HOME_ARG=${CODEX_HOME:-}
-CODEX_BIN=${CODEX_BIN:-codex}
+CODEX_BIN=${CODEX_BIN:-}
+CODEX_BIN_SOURCE=
 SOURCE_PACKAGE=
 ENABLE=0
 LEGACY_MODE=
@@ -22,8 +23,9 @@ Usage: install.sh [--enable] [--version 1.0.0] [--base-url HTTPS_URL]
        install.sh --legacy-cleanup [same source/download options]
 
 Installs the universal, script-only Z Codex Router source package.
-Global routing changes only with --enable. Legacy Rust installations must be
-explicitly inspected and cleaned before a fresh script installation.
+Global routing changes only with --enable. Enabling persistently authorizes
+route-only create_thread dispatch until uninstall. Legacy Rust installations
+must be explicitly inspected and cleaned before a fresh script installation.
 EOF
 }
 
@@ -48,6 +50,72 @@ trap 'exit 130' HUP INT TERM
 need_command() {
   command -v "$1" >/dev/null 2>&1 ||
     fail E_PREREQUISITE "missing command: $1"
+}
+
+codex_has_plugin_capability() {
+  candidate=$1
+  "$candidate" plugin marketplace add --help >/dev/null 2>&1 &&
+    "$candidate" plugin add --help >/dev/null 2>&1
+}
+
+use_codex_candidate() {
+  candidate=$1
+  source=$2
+  resolved=$(command -v "$candidate" 2>/dev/null || true)
+  [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] || return 1
+  CODEX_CANDIDATES_FOUND=1
+  codex_has_plugin_capability "$resolved" || return 1
+  CODEX_BIN=$resolved
+  CODEX_BIN_SOURCE=$source
+  return 0
+}
+
+resolve_codex_bin() {
+  CODEX_CANDIDATES_FOUND=0
+  if [ -n "$CODEX_BIN" ]; then
+    resolved=$(command -v "$CODEX_BIN" 2>/dev/null || true)
+    [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] ||
+      fail E_CODEX_MISSING "explicit Codex executable is not runnable: $CODEX_BIN"
+    codex_has_plugin_capability "$resolved" ||
+      fail E_CODEX_CAPABILITY "explicit Codex executable lacks plugin marketplace support"
+    CODEX_BIN=$resolved
+    CODEX_BIN_SOURCE=explicit
+    return
+  fi
+
+  use_codex_candidate codex path && return
+  if [ -n "${CODEX_CLI_PATH:-}" ]; then
+    use_codex_candidate "$CODEX_CLI_PATH" desktop-runtime && return
+  fi
+  if [ -n "${XDG_BIN_HOME:-}" ]; then
+    use_codex_candidate "$XDG_BIN_HOME/codex" user-local && return
+  fi
+  use_codex_candidate "$HOME/.local/bin/codex" user-local && return
+  platform=$(uname -s 2>/dev/null || printf unknown)
+  case "$platform" in
+    Darwin)
+      for candidate in \
+        /Applications/ChatGPT.app/Contents/Resources/codex \
+        "$HOME/Applications/ChatGPT.app/Contents/Resources/codex" \
+        /Applications/Codex.app/Contents/Resources/codex \
+        "$HOME/Applications/Codex.app/Contents/Resources/codex"; do
+        use_codex_candidate "$candidate" desktop-app-bundled && return
+      done
+      ;;
+    Linux)
+      if [ -n "${APPDIR:-}" ]; then
+        use_codex_candidate "$APPDIR/resources/codex" desktop-app-bundled && return
+        use_codex_candidate "$APPDIR/usr/bin/codex" desktop-app-bundled && return
+      fi
+      ;;
+  esac
+
+  if [ "$CODEX_CANDIDATES_FOUND" -eq 1 ]; then
+    fail E_CODEX_CAPABILITY \
+      "Codex candidates were found but none support plugin marketplace commands; use --codex-bin"
+  fi
+  fail E_CODEX_MISSING \
+    "Codex executable not found in PATH or supported desktop locations; install Codex CLI or use --codex-bin"
 }
 
 sha256_file() {
@@ -208,6 +276,29 @@ run_codex() {
   CODEX_HOME="$CODEX_HOME_ARG" "$CODEX_BIN" "$@"
 }
 
+registered_marketplace_root() {
+  output=$WORK_DIR/marketplaces.txt
+  run_codex plugin marketplace list >"$output" ||
+    fail E_CODEX_REGISTRATION "could not inspect configured marketplaces"
+  awk -v name="$MARKETPLACE_NAME" '
+    $1 == name {
+      sub(/^[^[:space:]]+[[:space:]]+/, "")
+      print
+      exit
+    }
+  ' "$output"
+}
+
+restore_marketplace_cache() {
+  [ "${CACHE_REPLACED:-0}" -eq 1 ] || return 0
+  [ -d "$CACHE_PREVIOUS" ] && [ ! -L "$CACHE_PREVIOUS" ] || return 1
+  failed=$CACHE_PARENT/.failed-$cache_token
+  mv "$CACHE_ROOT" "$failed" || return 1
+  mv "$CACHE_PREVIOUS" "$CACHE_ROOT" || return 1
+  run_codex plugin add "$PLUGIN_NAME@$MARKETPLACE_NAME" --json >/dev/null 2>&1 || return 1
+  rm -rf -- "$failed"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --enable) ENABLE=1; shift ;;
@@ -357,30 +448,51 @@ else
   fi
 fi
 
-command -v "$CODEX_BIN" >/dev/null 2>&1 ||
-  fail E_CODEX_MISSING "install the Codex CLI first"
-"$CODEX_BIN" plugin marketplace add --help >/dev/null 2>&1 ||
-  fail E_CODEX_CAPABILITY "plugin marketplace add is unavailable"
-"$CODEX_BIN" plugin add --help >/dev/null 2>&1 ||
-  fail E_CODEX_CAPABILITY "plugin add is unavailable"
+resolve_codex_bin
 
 cache_token=$(date -u +%Y%m%dT%H%M%SZ)-$$
 CACHE_VERSION=$VERSION+codex.$cache_token
 CACHE_PARENT=$CODEX_HOME_ARG/z-codex-router-marketplaces
-CACHE_ROOT=$CACHE_PARENT/$CACHE_VERSION
 mkdir -p "$CACHE_PARENT"
-[ ! -e "$CACHE_ROOT" ] || fail E_CACHE_CONFLICT "local cache path already exists"
+existing_marketplace_root=$(registered_marketplace_root)
+if [ -n "$existing_marketplace_root" ]; then
+  case "$existing_marketplace_root" in
+    "$CACHE_PARENT"/*) ;;
+    *) fail E_MARKETPLACE_CONFLICT "existing z-codex-router marketplace is outside the managed cache" ;;
+  esac
+  [ -d "$existing_marketplace_root" ] && [ ! -L "$existing_marketplace_root" ] ||
+    fail E_MARKETPLACE_CONFLICT "existing managed marketplace root is invalid"
+  CACHE_ROOT=$existing_marketplace_root
+  CACHE_REPLACED=1
+  CACHE_PREVIOUS=$CACHE_PARENT/.previous-$cache_token
+  [ ! -e "$CACHE_PREVIOUS" ] || fail E_CACHE_CONFLICT "marketplace rollback path already exists"
+else
+  CACHE_ROOT=$CACHE_PARENT/$CACHE_VERSION
+  CACHE_REPLACED=0
+  CACHE_PREVIOUS=
+  [ ! -e "$CACHE_ROOT" ] || fail E_CACHE_CONFLICT "local cache path already exists"
+fi
 cache_stage=$CACHE_PARENT/.stage-$cache_token
 copy_marketplace_source "$PACKAGE_ROOT" "$cache_stage"
 rewrite_cache_version "$cache_stage/plugins/z-codex-router/.codex-plugin/plugin.json" "$CACHE_VERSION"
+if [ "$CACHE_REPLACED" -eq 1 ]; then
+  mv "$CACHE_ROOT" "$CACHE_PREVIOUS"
+fi
 mv "$cache_stage" "$CACHE_ROOT"
 CACHE_LAUNCHER=$CACHE_ROOT/plugins/z-codex-router/scripts/routerctl.sh
 
 if ! run_codex plugin marketplace add "$CACHE_ROOT" --json; then
+  restore_marketplace_cache ||
+    fail E_CODEX_REGISTRATION_ROLLBACK "marketplace registration failed and the previous source could not be restored"
   fail E_CODEX_REGISTRATION "marketplace registration failed; Router user files were not changed"
 fi
 if ! run_codex plugin add "$PLUGIN_NAME@$MARKETPLACE_NAME" --json; then
+  restore_marketplace_cache ||
+    fail E_CODEX_REGISTRATION_ROLLBACK "plugin registration failed and the previous plugin could not be restored"
   fail E_CODEX_REGISTRATION "plugin installation failed; Router user files were not changed"
+fi
+if [ "$CACHE_REPLACED" -eq 1 ]; then
+  rm -rf -- "$CACHE_PREVIOUS"
 fi
 
 if [ "$ENABLE" -eq 1 ]; then
@@ -402,4 +514,6 @@ printf '%s\n' "ZCR_VERSION=$VERSION" "ZCR_CACHE_VERSION=$CACHE_VERSION" \
   "ZCR_SOURCE=$CACHE_ROOT" "ZCR_DOWNLOADED_BYTES=$DOWNLOADED_BYTES" \
   "ZCR_ROUTER_ACTION=$PREFLIGHT_ACTION" \
   "ZCR_ENABLED=$([ "$ENABLE" -eq 1 ] && printf true || printf false)" \
+  "ZCR_CODEX_BIN=$CODEX_BIN" "ZCR_CODEX_SOURCE=$CODEX_BIN_SOURCE" \
+  "ZCR_ROUTE_CREATE_AUTHORIZATION=$([ "$ENABLE" -eq 1 ] && printf persistent-until-uninstall || printf inactive)" \
   "ZCR_NEXT_STEP=start-a-new-task"

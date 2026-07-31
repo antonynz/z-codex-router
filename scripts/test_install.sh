@@ -33,8 +33,22 @@ fi
 case "$*" in
   *--help*) exit 0 ;;
 esac
+if [ "$*" = "plugin marketplace list" ]; then
+  printf '%-24s %s\n' MARKETPLACE ROOT
+  if [ -n "${FAKE_MARKETPLACE_STATE:-}" ] && [ -f "$FAKE_MARKETPLACE_STATE" ]; then
+    printf '%-24s %s\n' z-codex-router "$(cat "$FAKE_MARKETPLACE_STATE")"
+  fi
+  exit 0
+fi
 if [ "${FAKE_CODEX_FAIL:-0}" = 1 ] && [ "$1" = plugin ]; then
   exit 17
+fi
+if [ "$1 $2 $3" = "plugin marketplace add" ] && [ -n "${FAKE_MARKETPLACE_STATE:-}" ]; then
+  if [ -f "$FAKE_MARKETPLACE_STATE" ] &&
+    [ "$(cat "$FAKE_MARKETPLACE_STATE")" != "$4" ]; then
+    exit 18
+  fi
+  printf '%s\n' "$4" >"$FAKE_MARKETPLACE_STATE"
 fi
 exit 0
 EOF
@@ -43,16 +57,41 @@ chmod 700 "$fake"
 # Local universal source install uses one cache build and enables Router.
 home=$TEST_ROOT/home
 log=$TEST_ROOT/codex.log
-FAKE_CODEX_LOG=$log sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
+marketplace_state=$TEST_ROOT/marketplace-state
+FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
+  sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
   --codex-bin "$fake" --enable >"$TEST_ROOT/install-output"
 assert_contains "ZCR_VERSION=1.0.0" "$TEST_ROOT/install-output"
 assert_contains "ZCR_ENABLED=true" "$TEST_ROOT/install-output"
+assert_contains "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall" "$TEST_ROOT/install-output"
+assert_contains "ZCR_CODEX_SOURCE=explicit" "$TEST_ROOT/install-output"
 assert_contains "+codex." "$TEST_ROOT/install-output"
+assert_contains "用户启用本受管块即持续明确授权" "$home/AGENTS.md"
+assert_contains "A1–C3 必须先在 commentary" "$home/AGENTS.md"
 assert_contains "plugin marketplace add" "$log"
 assert_contains "plugin add z-codex-router@z-codex-router" "$log"
 sh "$home"/z-codex-router-marketplaces/*/plugins/z-codex-router/scripts/routerctl.sh \
   --codex-home "$home" doctor >"$TEST_ROOT/doctor-output"
 assert_contains "code=OK_ENABLED" "$TEST_ROOT/doctor-output"
+
+# Reinstalling 1.0.0 refreshes the already registered managed marketplace in place.
+FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
+  sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
+  --codex-bin "$fake" --enable >"$TEST_ROOT/reinstall-output"
+assert_contains "ZCR_ROUTER_ACTION=upgrade" "$TEST_ROOT/reinstall-output"
+assert_contains "ZCR_SOURCE=$(cat "$marketplace_state")" "$TEST_ROOT/reinstall-output"
+
+# Without a PATH CLI, Linux/macOS user-local discovery can supply a capable Codex executable.
+home=$TEST_ROOT/discovery-home
+discovery_user=$TEST_ROOT/discovery-user
+mkdir -p "$home" "$discovery_user/.local/bin" "$discovery_user/path-bin"
+cp "$fake" "$discovery_user/.local/bin/codex"
+printf '#!/usr/bin/env sh\nexit 2\n' >"$discovery_user/path-bin/codex"
+chmod 700 "$discovery_user/path-bin/codex"
+PATH=$discovery_user/path-bin:/usr/bin:/bin HOME=$discovery_user sh "$INSTALLER" --source "$ROOT" \
+  --codex-home "$home" >"$TEST_ROOT/discovery-output"
+assert_contains "ZCR_CODEX_SOURCE=user-local" "$TEST_ROOT/discovery-output"
+assert_contains "ZCR_ENABLED=false" "$TEST_ROOT/discovery-output"
 
 # Registration failure occurs after read-only preflight and preserves Router user files.
 home=$TEST_ROOT/registration-failure

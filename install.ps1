@@ -5,7 +5,7 @@ param(
     [string]$Version = "1.0.0",
     [string]$BaseUrl,
     [string]$CodexHome = $env:CODEX_HOME,
-    [string]$CodexBin = $(if ($env:CODEX_BIN) { $env:CODEX_BIN } else { "codex" }),
+    [string]$CodexBin = $env:CODEX_BIN,
     [string]$Source,
     [switch]$LegacyCleanupDryRun,
     [switch]$LegacyCleanup
@@ -28,6 +28,93 @@ function Fail-Bootstrap {
 function Get-Sha256File {
     param([string]$Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Test-CodexPluginCapability {
+    param([string]$Candidate)
+    try {
+        & $Candidate plugin marketplace add --help *> $null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        & $Candidate plugin add --help *> $null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Resolve-CodexExecutable {
+    param([string]$Explicit)
+
+    if (-not [String]::IsNullOrWhiteSpace($Explicit)) {
+        $command = Get-Command $Explicit -ErrorAction SilentlyContinue
+        if ($null -eq $command) {
+            Fail-Bootstrap "E_CODEX_MISSING" "explicit Codex executable is not runnable: $Explicit"
+        }
+        $resolved = $command.Definition
+        if (-not [IO.File]::Exists($resolved)) {
+            Fail-Bootstrap "E_CODEX_MISSING" "explicit Codex executable is not a file: $Explicit"
+        }
+        if (-not (Test-CodexPluginCapability $resolved)) {
+            Fail-Bootstrap "E_CODEX_CAPABILITY" "explicit Codex executable lacks plugin marketplace support"
+        }
+        return [PSCustomObject]@{ Path = $resolved; Source = "explicit" }
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $pathCommand = Get-Command "codex" -ErrorAction SilentlyContinue
+    if ($null -ne $pathCommand) {
+        $pathValue = $pathCommand.Definition
+        $candidates.Add([PSCustomObject]@{ Path = $pathValue; Source = "path" })
+    }
+    if (-not [String]::IsNullOrEmpty($env:CODEX_CLI_PATH)) {
+        $candidates.Add([PSCustomObject]@{ Path = $env:CODEX_CLI_PATH; Source = "desktop-runtime" })
+    }
+    if (-not [String]::IsNullOrEmpty($env:LOCALAPPDATA)) {
+        foreach ($relative in @(
+            "OpenAI\Codex\bin\codex.exe",
+            "Programs\ChatGPT\resources\codex.exe",
+            "Programs\Codex\resources\codex.exe"
+        )) {
+            $candidates.Add([PSCustomObject]@{
+                Path = [IO.Path]::Combine($env:LOCALAPPDATA, $relative)
+                Source = "desktop-app-local"
+            })
+        }
+    }
+    if (-not [String]::IsNullOrEmpty($env:USERPROFILE)) {
+        $candidates.Add([PSCustomObject]@{
+            Path = [IO.Path]::Combine($env:USERPROFILE, ".codex", "bin", "windows", "codex.exe")
+            Source = "desktop-app-local"
+        })
+    }
+    $getAppx = Get-Command "Get-AppxPackage" -ErrorAction SilentlyContinue
+    if ($null -ne $getAppx) {
+        foreach ($name in @("OpenAI.ChatGPT-Desktop", "OpenAI.Codex")) {
+            foreach ($package in @(Get-AppxPackage -Name $name -ErrorAction SilentlyContinue)) {
+                if (-not [String]::IsNullOrEmpty($package.InstallLocation)) {
+                    $candidates.Add([PSCustomObject]@{
+                        Path = [IO.Path]::Combine($package.InstallLocation, "app", "resources", "codex.exe")
+                        Source = "desktop-app-appx"
+                    })
+                }
+            }
+        }
+    }
+
+    $found = $false
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if ($seen.ContainsKey($candidate.Path)) { continue }
+        $seen[$candidate.Path] = $true
+        if (-not [IO.File]::Exists($candidate.Path)) { continue }
+        $found = $true
+        if (Test-CodexPluginCapability $candidate.Path) { return $candidate }
+    }
+    if ($found) {
+        Fail-Bootstrap "E_CODEX_CAPABILITY" "Codex candidates were found but none support plugin marketplace commands; use -CodexBin"
+    }
+    Fail-Bootstrap "E_CODEX_MISSING" "Codex executable not found in PATH or supported desktop locations; install Codex CLI or use -CodexBin"
 }
 
 function Invoke-Download {
@@ -227,6 +314,32 @@ function Invoke-Codex {
     }
 }
 
+function Get-RegisteredMarketplaceRoot {
+    $oldHome = $env:CODEX_HOME
+    try {
+        $env:CODEX_HOME = $CodexHome
+        $lines = @(& $CodexBin plugin marketplace list --json)
+        if ($LASTEXITCODE -ne 0) {
+            Fail-Bootstrap "E_CODEX_REGISTRATION" "could not inspect configured marketplaces"
+        }
+        $text = $lines -join "`n"
+        if ([String]::IsNullOrWhiteSpace($text)) { return $null }
+        try {
+            $document = $text | ConvertFrom-Json
+        }
+        catch {
+            Fail-Bootstrap "E_CODEX_REGISTRATION" "marketplace list returned invalid JSON"
+        }
+        foreach ($marketplace in @($document.marketplaces)) {
+            if ($marketplace.name -eq $MarketplaceName) { return [string]$marketplace.root }
+        }
+        return $null
+    }
+    finally {
+        $env:CODEX_HOME = $oldHome
+    }
+}
+
 $exitCode = 0
 try {
     if ($LegacyCleanup -and $LegacyCleanupDryRun) {
@@ -337,30 +450,71 @@ try {
         throw
     }
 
-    if ((Get-Command $CodexBin -ErrorAction SilentlyContinue) -eq $null) {
-        Fail-Bootstrap "E_CODEX_MISSING" "install the Codex CLI first"
-    }
-    & $CodexBin plugin marketplace add --help *> $null
-    if ($LASTEXITCODE -ne 0) { Fail-Bootstrap "E_CODEX_CAPABILITY" "plugin marketplace add is unavailable" }
-    & $CodexBin plugin add --help *> $null
-    if ($LASTEXITCODE -ne 0) { Fail-Bootstrap "E_CODEX_CAPABILITY" "plugin add is unavailable" }
+    $codexResolution = Resolve-CodexExecutable $CodexBin
+    $CodexBin = $codexResolution.Path
+    $codexBinSource = $codexResolution.Source
 
     $cacheToken = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ") + "-" + $PID
     $cacheVersion = "$Version+codex.$cacheToken"
     $cacheParent = [IO.Path]::Combine($CodexHome, "z-codex-router-marketplaces")
-    $cacheRoot = [IO.Path]::Combine($cacheParent, $cacheVersion)
     [void][IO.Directory]::CreateDirectory($cacheParent)
-    if (Test-Path -LiteralPath $cacheRoot) {
-        Fail-Bootstrap "E_CACHE_CONFLICT" "local cache path already exists"
+    $existingMarketplaceRoot = Get-RegisteredMarketplaceRoot
+    $cacheReplaced = $false
+    $cachePrevious = $null
+    if (-not [String]::IsNullOrEmpty($existingMarketplaceRoot)) {
+        $cacheRoot = [IO.Path]::GetFullPath($existingMarketplaceRoot)
+        $managedPrefix = [IO.Path]::GetFullPath($cacheParent).TrimEnd("\", "/") + [IO.Path]::DirectorySeparatorChar
+        if (-not $cacheRoot.StartsWith($managedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Fail-Bootstrap "E_MARKETPLACE_CONFLICT" "existing z-codex-router marketplace is outside the managed cache"
+        }
+        if (-not [IO.Directory]::Exists($cacheRoot) -or
+            (((Get-Item -LiteralPath $cacheRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Fail-Bootstrap "E_MARKETPLACE_CONFLICT" "existing managed marketplace root is invalid"
+        }
+        $cacheReplaced = $true
+        $cachePrevious = [IO.Path]::Combine($cacheParent, ".previous-" + $cacheToken)
+        if (Test-Path -LiteralPath $cachePrevious) {
+            Fail-Bootstrap "E_CACHE_CONFLICT" "marketplace rollback path already exists"
+        }
+    }
+    else {
+        $cacheRoot = [IO.Path]::Combine($cacheParent, $cacheVersion)
+        if (Test-Path -LiteralPath $cacheRoot) {
+            Fail-Bootstrap "E_CACHE_CONFLICT" "local cache path already exists"
+        }
     }
     $cacheStage = [IO.Path]::Combine($cacheParent, ".stage-" + $cacheToken)
     Copy-MarketplaceSource $packageRoot $cacheStage
     Set-CacheVersion ([IO.Path]::Combine($cacheStage, "plugins", "z-codex-router", ".codex-plugin", "plugin.json")) $cacheVersion
+    if ($cacheReplaced) {
+        [IO.Directory]::Move($cacheRoot, $cachePrevious)
+    }
     [IO.Directory]::Move($cacheStage, $cacheRoot)
     $cacheLauncher = [IO.Path]::Combine($cacheRoot, "plugins", "z-codex-router", "scripts", "routerctl.ps1")
 
-    Invoke-Codex @("plugin", "marketplace", "add", $cacheRoot, "--json")
-    Invoke-Codex @("plugin", "add", "$PluginName@$MarketplaceName", "--json")
+    try {
+        Invoke-Codex @("plugin", "marketplace", "add", $cacheRoot, "--json")
+        Invoke-Codex @("plugin", "add", "$PluginName@$MarketplaceName", "--json")
+    }
+    catch {
+        $registrationFailure = $_.Exception.Message
+        if ($cacheReplaced) {
+            $failedCache = [IO.Path]::Combine($cacheParent, ".failed-" + $cacheToken)
+            try {
+                [IO.Directory]::Move($cacheRoot, $failedCache)
+                [IO.Directory]::Move($cachePrevious, $cacheRoot)
+                Invoke-Codex @("plugin", "add", "$PluginName@$MarketplaceName", "--json")
+                [IO.Directory]::Delete($failedCache, $true)
+            }
+            catch {
+                Fail-Bootstrap "E_CODEX_REGISTRATION_ROLLBACK" "registration failed and the previous plugin could not be restored"
+            }
+        }
+        Fail-Bootstrap "E_CODEX_REGISTRATION" "registration failed; Router user files were not changed: $registrationFailure"
+    }
+    if ($cacheReplaced) {
+        [IO.Directory]::Delete($cachePrevious, $true)
+    }
     if ($Enable) {
         if ($preflightAction -eq "upgrade") {
             Invoke-Routerctl $cacheLauncher @("upgrade")
@@ -388,6 +542,9 @@ try {
     Write-Output "ZCR_DOWNLOADED_BYTES=$DownloadedBytes"
     Write-Output "ZCR_ROUTER_ACTION=$preflightAction"
     Write-Output ("ZCR_ENABLED=" + $Enable.IsPresent.ToString().ToLowerInvariant())
+    Write-Output "ZCR_CODEX_BIN=$CodexBin"
+    Write-Output "ZCR_CODEX_SOURCE=$codexBinSource"
+    Write-Output ("ZCR_ROUTE_CREATE_AUTHORIZATION=" + $(if ($Enable) { "persistent-until-uninstall" } else { "inactive" }))
     Write-Output "ZCR_NEXT_STEP=start-a-new-task"
 }
 catch {

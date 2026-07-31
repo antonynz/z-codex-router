@@ -35,9 +35,10 @@ Z Codex Router 是一个仅本地运行的 skills-only Codex 插件。运行时�
 - 把受管路由块放在全局 `AGENTS.md` 前部（可在 UTF-8 BOM 后），并由 Doctor 检查实际指令来源、
   字节范围、`project_doc_max_bytes`、全局 override 与项目/嵌套指令链。
 
-Router 是“指令路由”，不是宿主层模型切换器。只有当前用户明确请求创建新任务时，父任务才可调用
-一次 `create_thread`；持久指令本身不是创建授权。禁止自动降级、当前任务代做、pending/unknown 后
-重试或 fallback 到 `spawn_agent`。
+Router 是“指令路由”，不是宿主层模型切换器。用户明确执行 `--enable` / `-Enable` 后，受管块会
+持续授权 Router 仅为路由调用 `create_thread`，直至卸载：A0 在当前根执行，A1–C3 创建恰好一个
+执行根，有效 receipt 执行根不递归创建。该授权不涵盖发布、生产变更或其他外部副作用。禁止自动
+降级、当前任务代做、pending/unknown 后重试或 fallback 到 `spawn_agent`。
 
 ### 安装资产
 
@@ -49,8 +50,16 @@ GitHub v1.0.0 Release 只包含：
 
 两份归档解包后的文件内容相同。公开 manifest、标签和 Release 均保持 `1.0.0`；本地 Codex marketplace
 cache 会使用 `1.0.0+codex.<timestamp>`，让同版本重装能够被新任务重新载入。
+同版本重装会原子刷新已注册的受管 marketplace root；失败时恢复旧 source/plugin。指向受管 cache
+之外的同名 marketplace 会返回冲突，不会被删除或接管。
 
 ### 安装并启用
+
+不要求单独安装到 PATH：安装器会先使用显式 `--codex-bin` / `-CodexBin` 或 `CODEX_BIN`，再检查
+PATH 与桌面端 `CODEX_CLI_PATH`；macOS 还会发现 ChatGPT/Codex app bundle 内置的 `codex`，Windows
+会检查用户本地副本与 AppX package 的 `app\resources\codex.exe`。所有候选都必须实际通过 plugin
+marketplace 能力探测。
+Linux 没有固定的官方 ChatGPT desktop 路径，安装器仅检查 PATH、用户 bin 与 AppImage 候选。
 
 macOS/Linux：
 
@@ -104,8 +113,8 @@ sh install.sh --source . --enable
 ```
 
 普通安装（不带 enable）只注册带 cache build metadata 的插件 source，并执行只读 preflight；只有
-`--enable` / `-Enable` 才修改全局 Router state。安装、升级和卸载后必须新开任务，已有任务不会重新
-加载指令或技能。
+`--enable` / `-Enable` 才修改全局 Router state，并持续授权上述单根路由创建；卸载即撤销。安装、
+升级和卸载后必须新开任务，已有任务不会重新加载指令或技能。
 
 ### 旧 Rust 安装边界
 
@@ -208,6 +217,11 @@ BOM). Doctor reports its byte range, effective `project_doc_max_bytes`, the effe
 instruction source, global override shadowing, and the project/nested instruction chain for
 `doctor --cwd`.
 
+Explicitly enabling the Router persistently authorizes `create_thread` only for route dispatch
+until uninstall: A0 stays in the coordinating root, A1-C3 create exactly one execution root, and a
+valid receipt execution root never recurses. This authorization does not cover publishing,
+production changes, or other external side effects.
+
 The v1.0.0 Release has exactly two universal source assets plus checksums:
 
 - `z-codex-router-1.0.0.tar.gz`
@@ -216,6 +230,11 @@ The v1.0.0 Release has exactly two universal source assets plus checksums:
 
 Public manifests and the tag remain `1.0.0`. Local Codex marketplace copies use
 `1.0.0+codex.<timestamp>` as cache metadata.
+
+The installer can use a capable Codex executable bundled with the desktop app even when `codex`
+is not on `PATH`. It probes explicit overrides first, then `PATH`, macOS ChatGPT/Codex app bundles,
+Windows user-local and AppX locations, and Linux user-bin/AppImage candidates. Candidates must
+actually support the required plugin marketplace commands.
 
 An old Rust/prebuilt installation is never migrated implicitly. Run an explicit legacy cleanup
 dry-run, confirm the cleanup, and then perform a fresh install. Cleanup backs up user instructions,

@@ -15,7 +15,8 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 - 非空全局 `AGENTS.override.md` 会遮蔽 `AGENTS.md`；安装必须返回
   `E_GLOBAL_OVERRIDE_ACTIVE`，不得修改 override。
 - 旧 Rust/prebuilt state 不迁移、不覆盖。只允许显式 legacy cleanup 后 fresh install。
-- 创建新任务仍需当前用户明确请求；安装/启用本身不是 `create_thread` 授权。
+- 用户明确执行 `--enable` / `-Enable` 即持续授权 Router 仅为路由调用 `create_thread`，直到卸载；
+  该授权不涵盖发布、生产变更或其他外部副作用。
 
 ## Release 资产与校验
 
@@ -40,7 +41,25 @@ Bootstrap 会把 marketplace source 复制到
 `<codex_home>/z-codex-router-marketplaces/1.0.0+codex.<timestamp>/`，只在该本地副本中更新 plugin
 manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.0.0`。
 
+若 `z-codex-router` marketplace 已指向上述受管目录，重装会保留已注册 root 路径并原子替换其中的
+source；plugin 注册失败则恢复旧 source 并重新注册旧 plugin。若同名 marketplace 指向受管目录之外，
+返回 `E_MARKETPLACE_CONFLICT`，不得删除或接管。
+
 ## Fresh install
+
+Bootstrap 按以下优先级发现支持 plugin marketplace 的 Codex executable：
+
+1. 显式 `--codex-bin` / `-CodexBin` 或 `CODEX_BIN`。
+2. `PATH` 中具备所需能力的 `codex`，再检查桌面端提供的 `CODEX_CLI_PATH`。
+3. macOS 的 ChatGPT/Codex app bundle（包括
+   `/Applications/ChatGPT.app/Contents/Resources/codex`）。
+4. Windows 的用户本地 Codex 副本，再通过 AppX package location 检查
+   `app\resources\codex.exe`。
+5. Linux 的 `$XDG_BIN_HOME`、`~/.local/bin` 或 AppImage `$APPDIR` 候选。
+
+每个自动发现候选都必须实际通过 `plugin marketplace add --help` 和 `plugin add --help`；WindowsApps
+中存在但因 ACL 无法执行的文件不会被误判为可用。Linux 没有承诺固定的官方 ChatGPT desktop bundle，
+找不到时需安装 Codex CLI 或显式传入 executable。
 
 POSIX：
 
@@ -195,8 +214,9 @@ Uninstall 验证 managed prefix 后只移除 prefix 与 state；安装后的用�
 
 ## 路由创建结果
 
-父任务只有在当前用户明确授权新任务时才调用一次 `create_thread`，并把 profile effort 映射到工具
-`thinking` 参数。结果必须分类为：
+无有效父 receipt 的协调根对 A0 在当前根执行，对 A1–C3 必须调用一次 `create_thread`，并把
+profile effort 映射到工具 `thinking` 参数。有效 receipt 执行根直接执行冻结范围且不得递归创建。
+结果必须分类为：
 
 - `threadId` → `ROUTE_READY`
 - `clientThreadId` → `ROUTE_PENDING`

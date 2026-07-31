@@ -64,7 +64,12 @@ try {
     $result = Invoke-Installer @("-Source", $Root, "-CodexHome", $caseHome, "-CodexBin", $fake, "-Enable") 0 @{ FAKE_CODEX_LOG = $log }
     Assert-Contains $result.Output "ZCR_VERSION=1.0.0"
     Assert-Contains $result.Output "ZCR_ENABLED=true"
+    Assert-Contains $result.Output "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall"
+    Assert-Contains $result.Output "ZCR_CODEX_SOURCE=explicit"
     Assert-Contains $result.Output "+codex."
+    $managedAgents = [IO.File]::ReadAllText([IO.Path]::Combine($caseHome, "AGENTS.md"), $Utf8NoBom)
+    Assert-Contains $managedAgents "create_thread"
+    Assert-Contains $managedAgents "A1"
     Assert-Contains ([IO.File]::ReadAllText($log)) "plugin marketplace add"
     Assert-Contains ([IO.File]::ReadAllText($log)) "plugin add z-codex-router@z-codex-router"
 

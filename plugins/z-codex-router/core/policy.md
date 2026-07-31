@@ -33,7 +33,9 @@
 
 ## Route create 结果
 
-- 当前用户未明确授权创建新任务：`ROUTE_HANDOFF_REQUIRED`。
+- `--enable` 写入的受管块持续授权 Router 仅为路由调用 `create_thread`；卸载即撤销。
+- 无有效父 receipt 时 A0 当前执行，A1–C3 必须创建一次；有效 receipt 执行根不得递归创建。
+- 受管块未生效、被遮蔽或 host policy 阻止：`ROUTE_HANDOFF_REQUIRED`。
 - `threadId`：`ROUTE_READY`。
 - `clientThreadId`：`ROUTE_PENDING`，不是失败，禁止重试。
 - 明确 destination tuple 拒绝：`ROUTE_DESTINATION_TUPLE_UNAVAILABLE`。

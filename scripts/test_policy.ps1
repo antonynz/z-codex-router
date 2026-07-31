@@ -30,9 +30,14 @@ foreach ($token in @(
     Assert-Text $Router $token
 }
 Assert-Text $Portable 'pending = "clientThreadId:ROUTE_PENDING-no-retry"'
-Assert-Text $Portable 'authorization = "explicit-current-user-request"'
+Assert-Text $Portable 'authorization = "managed-enable-persistent-until-uninstall"'
+Assert-Text $Portable 'dispatch = "A0-current-root;A1-C3-create-once"'
+Assert-Text $Portable 'execution_root = "valid-parent-receipt-execute-no-recursion"'
 Assert-Text $Portable 'states = ["verified", "mismatch", "unobservable"]'
 Assert-Text $Portable 'outcome_unknown = "ROUTE_OUTCOME_UNKNOWN-no-retry"'
-Assert-Text $Block "current/version"
+Assert-Text $Block "current/format"
+Assert-Text $Block "payload_sha256"
+Assert-Text $Block "A1"
+Assert-Text $Block "profile override"
 Assert-Text $Block "clientThreadId"
 Write-Output "PASS test_policy.ps1 ($Passed assertions)"

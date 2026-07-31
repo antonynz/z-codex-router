@@ -11,6 +11,13 @@
 - Managed block 前置到全局 `AGENTS.md`，保留 UTF-8 BOM、CRLF/LF 与用户 bytes。Doctor 新增
   `--cwd`、global override、block byte range、有效 `project_doc_max_bytes` 与 project instruction
   chain 诊断。
+- Managed block 启动协议显式校验 `format`、`version` 与 `payload_sha256`，加载主 mode 并验证
+  profile override。Enable 构成持续到卸载的 route-only 根创建授权：A0 当前执行，A1–C3 必须
+  创建一次，有效 receipt 执行根不递归创建。
+- Bootstrap 无需 PATH 中另装 CLI：会发现并验证 macOS ChatGPT/Codex bundle、Windows
+  user-local/AppX 与 Linux user-bin/AppImage 中支持 plugin marketplace 的 Codex executable。
+- 同版本重装会原子刷新已注册的受管 marketplace root，并在 plugin 注册失败时恢复旧 source 与旧
+  plugin，不再因新的 cache 路径触发同名 marketplace 冲突。
 - 旧 Rust/prebuilt 安装不迁移：必须执行显式 legacy cleanup dry-run、确认 cleanup，再 fresh
   install。Cleanup 先备份用户指令、配置和旧 state。
 - 任务创建结果区分 `ROUTE_READY`、`ROUTE_PENDING`、`ROUTE_HANDOFF_REQUIRED`、

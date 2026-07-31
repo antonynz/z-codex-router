@@ -45,8 +45,9 @@
 数据，只读取非空 `model` 与 `reasoning_effort`；不得读取、输出或转交 thread/session、认证或其他
 request metadata。
 
-- 两字段可见且与 receipt 请求 tuple 完全一致：`verified`。
-- 两字段可见但任一不同：`mismatch`，所有 tier fail closed；更高 effort 也不兼容。
+- 执行根中两字段可见且与 receipt 请求 tuple 完全一致：`verified`。
+- 执行根中两字段可见但任一不同：`mismatch`，所有 tier fail closed；更高 effort 也不兼容。协调根
+  与目标 tuple 不同不是执行 mismatch，而是必须 dispatch 的正常条件。
 - 字段缺失、接口不可用或不是非空字符串：`unobservable`，不得猜测为 mismatch 或不支持。
 
 A1、B0、B1、B2、C1、C2 在父 receipt 已确认创建工具接受目标 tuple 且没有 reroute/failure 证据时，
@@ -76,11 +77,18 @@ Receipt protocol 1 只由实际协调并调用创建工具的父根生成；用�
 
 ## 创建授权与结果状态机
 
-持久 AGENTS 规则只能要求路由，不能替代当前用户对“创建新任务”的明确请求。只有当前轮用户明确
-授权创建新任务时才调用一次 `create_thread`。若没有该授权，返回 `ROUTE_HANDOFF_REQUIRED`，并只给
-出填入已冻结 tuple 的确认句：
+用户显式启用 Router 时，受管 AGENTS 块即记录对路由根创建的持续明确授权；该授权随受管块生效，
+卸载后撤销。它只允许 Router 调用 `create_thread` 创建路由所需的单一执行根，不授权发送、发布、
+生产变更、支付、账户/权限修改或其他外部副作用。
 
-`请为当前相同任务范围创建一个新的 Codex 独立任务，使用 <model> / <effort>，沿用当前 route receipt；不要创建子代理或第二个任务。`
+Dispatch 是强制状态机，不是建议：
+
+- 无有效父 receipt 的协调根把 A0 留在当前根执行。
+- 无有效父 receipt 的协调根对 A1–C3 必须冻结 scope、tier、model/effort 与验收，完成 commentary
+  披露后恰好调用一次 `create_thread`；不得等待再次授权、留在当前任务代做或改用 sub-agent。
+- 带有效父 receipt 的执行根直接执行冻结范围，不重分类、不递归创建。若 receipt 无效或越界则停止。
+- 受管块不存在、已卸载、被 override 遮蔽或当前策略禁止创建时，返回
+  `ROUTE_HANDOFF_REQUIRED`；只有此时才请求当前用户授权或修复启用状态。
 
 创建前必须在 commentary 披露单根拓扑、精确 model/effort、范围与验收。将 profile 的 `effort`
 逐字映射到创建工具的 `thinking` 参数；调用端 schema 只能记为 `caller-advertised`，不能声称目标端
