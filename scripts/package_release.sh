@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-VERSION=1.0.0
+VERSION=1.0.1
 OUT=$ROOT/dist
 
 usage() {

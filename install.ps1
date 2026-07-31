@@ -2,7 +2,7 @@
 param(
     [switch]$Enable,
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')]
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.0.1",
     [string]$BaseUrl,
     [string]$CodexHome = $env:CODEX_HOME,
     [string]$CodexBin = $env:CODEX_BIN,

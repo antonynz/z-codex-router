@@ -6,8 +6,8 @@
    worktree 当作 Codex home，也禁止按相对路径查找状态。
 2. 读取 `<codex_home>/z-codex-router/current/format` 并要求 `script-v1`，再读取 `current/version`
    与 `current/payload_sha256`。
-3. 读取 `versions/<version>/core/router.md`、`profiles/portable/default.toml` 和活动 stable
-   mapping；再读取一个最匹配的主 mode。确有跨领域需要时最多增加一个辅助 mode，最终交付仍由
+3. 读取 `versions/<version>/core/router.md`、`profiles/portable/default.toml`，再按其
+   `selection.stable_profile` 解析 stable profile；再读取一个最匹配的主 mode。确有跨领域需要时最多增加一个辅助 mode，最终交付仍由
    主 mode 负责。
 4. 若 `<codex_home>/z-codex-router-profile.toml` 存在，必须先用随附 `routerctl profile
    validate` 验证。验证失败即停止，绝不静默回退。
@@ -143,20 +143,31 @@ tuple unsupported 才能声称目标组合不可用。Receipt 必须记录 respo
   不能直接宣告完成；只有核对通过才汇总 `completed`，不可恢复的工具/执行错误汇总 `failed`，需要
   用户决定、权限或缺失能力则汇总 `needs-attention`。
 
-## 默认映射与 override
+## 语言跟随与 schema v1 线程边界
 
-活动 stable mapping 为 `profiles/stable/current-gpt-5.6-reference.toml`：
+父协调根与执行根之间的 receipt、进展、纠偏、用户输入转交和最终回报，应尽量跟随原用户的主要语言；
+原用户使用中文时，线程间自然语言通信也应尽量使用中文。此规则只影响自然语言，不翻译或改写
+机器字段、tier、model/effort、opaque token、路径、命令、错误码和协议键。在 schema v1 下，C1 的
+diagnosis 与 implementation 保持在同一个 Sol-high 线程内完成；不得引入 schema v2 handoff。
 
-| Tier | model | effort |
-| --- | --- | --- |
-| A0 | current-qualified-root | runtime-qualified |
-| A1 | gpt-5.6-luna | high |
-| B0 | gpt-5.6-luna | xhigh |
-| B1 | gpt-5.6-terra | high |
-| B2 | gpt-5.6-terra | xhigh |
-| C1 | gpt-5.6-sol | medium |
-| C2 | gpt-5.6-terra | max |
-| C3 | gpt-5.6-sol | max |
+## Stable profile resolution 与 override
+
+本文件不保存任何 model/effort tuple；唯一的 shipped default 来源是当前 payload 内的配置链：
+
+1. 先读取 `profiles/portable/default.toml`，只接受其中 `[selection].stable_profile` 的单一非空
+   相对路径。
+2. 将该值解析为当前 payload 下的 `profiles/<selection.stable_profile>`；拒绝绝对路径、路径穿越、
+   非 regular file、缺失文件以及指向 payload 外的路径。
+3. 读取解析出的 stable profile，并按 `profiles/schema.json` 与 schema v1 约束校验：`[routing]`
+   必须恰好包含 A0、A1、B0、B1、B2、C1、C2、C3 各一次且无未知 tier；A0 保留
+   `current-qualified-root/runtime-qualified`，其他条目必须是非空兼容 model token，effort 只能是
+   `medium`、`high`、`xhigh` 或 `max`。
+4. 解析、路径、schema、hash 或兼容性任一检查失败，都必须 fail closed：停止路由并报告错误；不读取
+   candidate、不回退到内联 mapping，也不猜测 model/effort。
+
+因此，stable 选择始终是 `portable/default.toml` → `selection.stable_profile` → stable profile
+这一条可审计链。显式 user/session/CLI tuple 与通过验证的 user override 仍按上文优先级覆盖 shipped
+default；override 无效时同样 fail closed。
 
 优先级固定为：显式 user/session/CLI tuple > 验证通过的 user override > shipped default。Override 位于
 `<codex_home>/z-codex-router-profile.toml`，不在不可变 payload 内；升级、恢复、回滚和卸载均不得

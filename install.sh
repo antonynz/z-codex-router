@@ -4,7 +4,7 @@ set -eu
 REPOSITORY=antonynz/z-codex-router
 PLUGIN_NAME=z-codex-router
 MARKETPLACE_NAME=z-codex-router
-VERSION=1.0.0
+VERSION=1.0.1
 BASE_URL=
 CODEX_HOME_ARG=${CODEX_HOME:-}
 CODEX_BIN=${CODEX_BIN:-}
@@ -17,7 +17,7 @@ DOWNLOADED_BYTES=0
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--enable] [--version 1.0.0] [--base-url HTTPS_URL]
+Usage: install.sh [--enable] [--version 1.0.1] [--base-url HTTPS_URL]
                   [--codex-home PATH] [--codex-bin PATH] [--source PATH]
        install.sh --legacy-cleanup-dry-run [same source/download options]
        install.sh --legacy-cleanup [same source/download options]

@@ -214,7 +214,7 @@ printf '%s\n' absent >"$transaction/current_before_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' 1 >"$transaction/remove_version"
-printf '%s\n' 1.0.0 >"$transaction/version"
+printf '%s\n' 1.0.1 >"$transaction/version"
 printf '%s\n' 4242 >"$transaction/operation_id"
 mv "$home/z-codex-router/current" "$home/z-codex-router/.current-previous-4242"
 expect_fail E_TRANSACTION_PENDING run_router "$home" doctor
@@ -239,7 +239,7 @@ printf '%s\n' absent >"$transaction/current_before_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' 0 >"$transaction/remove_version"
-printf '%s\n' 1.0.0 >"$transaction/version"
+printf '%s\n' 1.0.1 >"$transaction/version"
 printf '%s\n' 4343 >"$transaction/operation_id"
 printf 'user drift\n' >>"$home/AGENTS.md"
 cp "$home/AGENTS.md" "$TEST_ROOT/recover-drift-original"
@@ -264,7 +264,7 @@ cp "$backup/current.sha256" "$transaction/current_before_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' 0 >"$transaction/remove_version"
-printf '%s\n' 1.0.0 >"$transaction/version"
+printf '%s\n' 1.0.1 >"$transaction/version"
 printf '%s\n' 4444 >"$transaction/operation_id"
 printf 'tampered backup\n' >>"$backup/AGENTS.md"
 cp "$home/AGENTS.md" "$TEST_ROOT/recover-backup-live"
@@ -352,7 +352,7 @@ cp -R "$ROOT/plugins/z-codex-router" "$source_copy/"
 run_router "$home" install >/dev/null
 awk '
   !done && $0 ~ /^[[:space:]]*"version"[[:space:]]*:/ {
-    print "  \"version\": \"1.0.0+codex.test-build\","
+    print "  \"version\": \"1.0.1+codex.test-build\","
     done = 1
     next
   }
@@ -361,6 +361,6 @@ awk '
 mv "$source_copy/plugin.json" "$source_copy/z-codex-router/.codex-plugin/plugin.json"
 sh "$source_copy/z-codex-router/scripts/routerctl.sh" --source "$source_copy/z-codex-router" \
   --codex-home "$home" upgrade >"$TEST_ROOT/cache-upgrade"
-assert_contains "version=1.0.0+codex.test-build" "$TEST_ROOT/cache-upgrade"
+assert_contains "version=1.0.1+codex.test-build" "$TEST_ROOT/cache-upgrade"
 run_router "$home" doctor >"$TEST_ROOT/cache-doctor"
-assert_contains "version=1.0.0+codex.test-build" "$TEST_ROOT/cache-doctor"
+assert_contains "version=1.0.1+codex.test-build" "$TEST_ROOT/cache-doctor"

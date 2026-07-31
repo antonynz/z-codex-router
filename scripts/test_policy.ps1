@@ -7,6 +7,8 @@ $Portable = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex
 $Block = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", "core", "managed-block.md"))
 $Policy = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", "core", "policy.md"))
 $Setup = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", "skills", "setup-router", "SKILL.md"))
+$Plugin = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", ".codex-plugin", "plugin.json"))
+$ReleaseManifest = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", "release", "manifest.json"))
 $Passed = 0
 
 function Assert-Text {
@@ -67,6 +69,7 @@ Assert-Text $Portable 'user_input = "relay-to-user-never-answer-for-user"'
 Assert-Text $Portable 'completion_gate = "acceptance-tests-protection-paths"'
 Assert-Text $Block "current/format"
 Assert-Text $Block "payload_sha256"
+Assert-Text $Block "selection.stable_profile"
 Assert-Text $Block "A1"
 Assert-Text $Block "profile override"
 Assert-Text $Block "clientThreadId"
@@ -75,4 +78,93 @@ Assert-Text $Block "wait_threads"
 Assert-Text $Policy "ROUTE_OUTCOME_UNKNOWN"
 Assert-Text $Policy "needs-attention"
 Assert-Text $Setup "token+host+project/cwd+createdAt"
+
+Assert-Text $Router "profiles/portable/default.toml"
+Assert-Text $Router "[selection].stable_profile"
+Assert-Text $Router "fail closed"
+Assert-Text $Router "原用户的主要语言"
+Assert-Text $Router "schema v1"
+Assert-Text $Policy "自然语言通信"
+Assert-Text $Policy "机器字段、tier、"
+Assert-Text $Plugin '"version": "1.0.1"'
+Assert-Text $ReleaseManifest '"version": "1.0.1"'
+
+if ([Regex]::IsMatch($Router, 'gpt-5\.6-(luna|terra|sol)', [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    throw "FAIL: router.md hardcodes a GPT-5.6 model tuple"
+}
+$Passed++
+
+$stableMatches = [Regex]::Matches($Portable, '(?m)^\s*stable_profile\s*=\s*"([^"]+)"\s*$')
+if ($stableMatches.Count -ne 1) { throw "FAIL: portable/default.toml must select one stable profile" }
+$stableRelative = $stableMatches[0].Groups[1].Value
+if ($stableRelative -notmatch '^stable/[^/]+\.toml$') {
+    throw "FAIL: stable profile selection escapes profiles/stable"
+}
+$stablePath = [IO.Path]::Combine($Root, "plugins", "z-codex-router", "profiles", $stableRelative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+if (-not [IO.File]::Exists($stablePath)) { throw "FAIL: selected stable profile is missing" }
+$Passed++
+
+function Get-ValidatedProfile {
+    param([string]$Path)
+    $schemaCount = 0
+    $section = ""
+    $mapping = @{}
+    foreach ($raw in [IO.File]::ReadAllLines($Path)) {
+        $line = $raw -replace "`r$", ""
+        $line = $line -replace "\s*#.*$", ""
+        $line = $line.Trim()
+        if ($line.Length -eq 0) { continue }
+        if ($line -match '^\[[A-Za-z0-9_.-]+\]$') {
+            $section = $line
+            continue
+        }
+        if ($section.Length -eq 0) {
+            if ($line -eq "schema_version = 1") { $schemaCount++ }
+            continue
+        }
+        if ($section -ne "[routing]") { continue }
+        if ($line -notmatch '^([A-Za-z0-9][A-Za-z0-9._-]*)\s*=\s*\{\s*model\s*=\s*"([A-Za-z0-9._-]+)"\s*,\s*effort\s*=\s*"([A-Za-z0-9._-]+)"\s*\}\s*$') {
+            throw "FAIL: invalid routing line in $Path"
+        }
+        $tier = $Matches[1]
+        $model = $Matches[2]
+        $effort = $Matches[3]
+        if ($mapping.ContainsKey($tier)) { throw "FAIL: duplicate tier $tier in $Path" }
+        if ($tier -notmatch '^(A0|A1|B0|B1|B2|C1|C2|C3)$') {
+            throw "FAIL: unknown tier $tier in $Path"
+        }
+        $mapping[$tier] = @($model, $effort)
+    }
+    if ($schemaCount -ne 1) { throw "FAIL: schema_version in $Path" }
+    foreach ($tier in @("A0", "A1", "B0", "B1", "B2", "C1", "C2", "C3")) {
+        if (-not $mapping.ContainsKey($tier)) { throw "FAIL: missing tier $tier in $Path" }
+        $model = $mapping[$tier][0]
+        $effort = $mapping[$tier][1]
+        if ($tier -eq "A0") {
+            if ($model -ne "current-qualified-root" -or $effort -ne "runtime-qualified") {
+                throw "FAIL: A0 semantics in $Path"
+            }
+        }
+        elseif ($effort -notmatch '^(medium|high|xhigh|max)$') {
+            throw "FAIL: effort schema in $Path"
+        }
+    }
+    return $mapping
+}
+
+[void](Get-ValidatedProfile $stablePath)
+$Passed++
+$candidatePath = [IO.Path]::Combine($Root, "plugins", "z-codex-router", "profiles", "candidate", "current-gpt-5.6-no-luna-compatibility-candidate.toml")
+Assert-Text $Portable "candidate/current-gpt-5.6-no-luna-compatibility-candidate.toml"
+if (-not [IO.File]::Exists($candidatePath)) { throw "FAIL: no-Luna compatibility candidate is missing" }
+$candidateText = [IO.File]::ReadAllText($candidatePath)
+Assert-Text $candidateText 'purpose = "'
+[void](Get-ValidatedProfile $candidatePath)
+if ([Regex]::IsMatch($candidateText, 'gpt-5\.6-luna', [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    throw "FAIL: compatibility candidate contains a Luna tuple"
+}
+$stableRouting = [Regex]::Match([IO.File]::ReadAllText($stablePath), '(?ms)^\[routing\].*$').Value
+$candidateRouting = [Regex]::Match($candidateText, '(?ms)^\[routing\].*$').Value
+if ($stableRouting -eq $candidateRouting) { throw "FAIL: compatibility candidate routing is identical to stable" }
+$Passed++
 Write-Output "PASS test_policy.ps1 ($Passed assertions)"

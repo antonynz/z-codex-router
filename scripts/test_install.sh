@@ -61,7 +61,7 @@ marketplace_state=$TEST_ROOT/marketplace-state
 FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
   sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
   --codex-bin "$fake" --enable >"$TEST_ROOT/install-output"
-assert_contains "ZCR_VERSION=1.0.0" "$TEST_ROOT/install-output"
+assert_contains "ZCR_VERSION=1.0.1" "$TEST_ROOT/install-output"
 assert_contains "ZCR_ENABLED=true" "$TEST_ROOT/install-output"
 assert_contains "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall" "$TEST_ROOT/install-output"
 assert_contains "ZCR_CODEX_SOURCE=explicit" "$TEST_ROOT/install-output"
@@ -74,7 +74,7 @@ sh "$home"/z-codex-router-marketplaces/*/plugins/z-codex-router/scripts/routerct
   --codex-home "$home" doctor >"$TEST_ROOT/doctor-output"
 assert_contains "code=OK_ENABLED" "$TEST_ROOT/doctor-output"
 
-# Reinstalling 1.0.0 refreshes the already registered managed marketplace in place.
+# Reinstalling 1.0.1 refreshes the already registered managed marketplace in place.
 FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
   sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
   --codex-bin "$fake" --enable >"$TEST_ROOT/reinstall-output"

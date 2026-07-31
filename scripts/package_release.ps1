@@ -4,7 +4,7 @@ param([string]$Out = $(Join-Path ([IO.Path]::GetFullPath([IO.Path]::Combine($PSS
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 $Root = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, ".."))
-$Version = "1.0.0"
+$Version = "1.0.1"
 $Utf8NoBom = New-Object Text.UTF8Encoding($false)
 $Work = [IO.Path]::Combine([IO.Path]::GetTempPath(), "zcr-package-" + [Guid]::NewGuid().ToString("N"))
 
@@ -27,9 +27,9 @@ try {
 
     $releaseText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", "release", "manifest.json"))
     $pluginText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", ".codex-plugin", "plugin.json"))
-    if ($releaseText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.0"' -or
-        $pluginText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.0"') {
-        throw "E_RELEASE_VERSION: package manifests must both be 1.0.0"
+    if ($releaseText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.1"' -or
+        $pluginText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.1"') {
+        throw "E_RELEASE_VERSION: package manifests must both be 1.0.1"
     }
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($Out))
     $tarAsset = [IO.Path]::Combine([IO.Path]::GetFullPath($Out), "z-codex-router-$Version.tar.gz")

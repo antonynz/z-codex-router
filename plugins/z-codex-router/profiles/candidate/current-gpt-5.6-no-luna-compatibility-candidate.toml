@@ -1,10 +1,10 @@
 schema_version = 1
 
 [metadata]
-name = "current-gpt-5.6-balanced-luna-max-candidate"
+name = "current-gpt-5.6-no-luna-compatibility-candidate"
 status = "candidate"
-purpose = "以 Sol 负责不确定性和高风险判断，以 Luna 承担明确工程执行，以 Terra 承担复杂状态和长程自治。"
-evaluation_state = "cross-benchmark-candidate"
+purpose = "面向不支持 Luna 的 destination 的兼容候选：用 Terra 承担明确与复杂执行，用 Sol 承担不确定性和高风险判断；保持与 stable 不同的 routing 以便独立评估。"
+evaluation_state = "compatibility-candidate"
 
 [compatibility]
 runtime_observability = "three-state"
@@ -14,9 +14,9 @@ supported_platforms = ["darwin", "linux", "windows"]
 
 [routing]
 A0 = { model = "current-qualified-root", effort = "runtime-qualified" }
-A1 = { model = "gpt-5.6-luna", effort = "high" }
-B0 = { model = "gpt-5.6-luna", effort = "xhigh" }
-B1 = { model = "gpt-5.6-luna", effort = "max" }
+A1 = { model = "gpt-5.6-terra", effort = "high" }
+B0 = { model = "gpt-5.6-terra", effort = "xhigh" }
+B1 = { model = "gpt-5.6-terra", effort = "max" }
 B2 = { model = "gpt-5.6-terra", effort = "max" }
 C1 = { model = "gpt-5.6-sol", effort = "high" }
 C2 = { model = "gpt-5.6-terra", effort = "max" }

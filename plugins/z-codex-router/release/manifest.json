@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "channel": "stable",
   "implementation": "posix-sh+powershell-5.1",
   "stateFormat": "script-v1",

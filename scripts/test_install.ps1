@@ -62,7 +62,7 @@ try {
 
     $caseHome = [IO.Path]::Combine($TestRoot, "home")
     $result = Invoke-Installer @("-Source", $Root, "-CodexHome", $caseHome, "-CodexBin", $fake, "-Enable") 0 @{ FAKE_CODEX_LOG = $log }
-    Assert-Contains $result.Output "ZCR_VERSION=1.0.0"
+    Assert-Contains $result.Output "ZCR_VERSION=1.0.1"
     Assert-Contains $result.Output "ZCR_ENABLED=true"
     Assert-Contains $result.Output "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall"
     Assert-Contains $result.Output "ZCR_CODEX_SOURCE=explicit"

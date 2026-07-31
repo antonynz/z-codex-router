@@ -31,8 +31,8 @@ try {
     $dist = [IO.Path]::Combine($TestRoot, "dist")
     & $Engine -NoProfile -ExecutionPolicy Bypass -File ([IO.Path]::Combine($PSScriptRoot, "package_release.ps1")) -Out $dist
     if ($LASTEXITCODE -ne 0) { throw "package_release.ps1 failed" }
-    $tarAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.0.tar.gz")
-    $zipAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.0.zip")
+    $tarAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.1.tar.gz")
+    $zipAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.1.zip")
     if (-not [IO.File]::Exists($tarAsset) -or -not [IO.File]::Exists($zipAsset)) {
         throw "release assets are missing"
     }
@@ -43,8 +43,8 @@ try {
     & tar -xzf $tarAsset -C $tarRoot
     if ($LASTEXITCODE -ne 0) { throw "tar extraction failed" }
     Expand-Archive -LiteralPath $zipAsset -DestinationPath $zipRoot
-    $tarPackage = [IO.Path]::Combine($tarRoot, "z-codex-router-1.0.0")
-    $zipPackage = [IO.Path]::Combine($zipRoot, "z-codex-router-1.0.0")
+    $tarPackage = [IO.Path]::Combine($tarRoot, "z-codex-router-1.0.1")
+    $zipPackage = [IO.Path]::Combine($zipRoot, "z-codex-router-1.0.1")
     if ((Get-TreeHash $tarPackage) -ne (Get-TreeHash $zipPackage)) {
         throw "tar/zip extracted content differs"
     }

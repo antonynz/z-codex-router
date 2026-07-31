@@ -230,7 +230,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "1"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.0"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4242"
     [IO.Directory]::Move($current, [IO.Path]::Combine($routerRoot, ".current-previous-4242"))
     $result = Invoke-Router $caseHome @("recover")
@@ -255,7 +255,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "0"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.0"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4343"
     [IO.File]::AppendAllText([IO.Path]::Combine($caseHome, "AGENTS.md"), "user drift`n", $Utf8NoBom)
     $driftBytes = [IO.File]::ReadAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md"))
@@ -286,7 +286,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "0"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.0"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4444"
     [IO.File]::AppendAllText([IO.Path]::Combine($backup, "AGENTS.md"), "tampered backup`n", $Utf8NoBom)
     $liveBytes = [IO.File]::ReadAllBytes($agents)
@@ -369,13 +369,13 @@ try {
     $sourcePlugin = [IO.Path]::Combine($sourceParent, "z-codex-router")
     $manifest = [IO.Path]::Combine($sourcePlugin, ".codex-plugin", "plugin.json")
     $manifestText = [IO.File]::ReadAllText($manifest, $Utf8NoBom)
-    $manifestText = $manifestText.Replace('"version": "1.0.0"', '"version": "1.0.0+codex.test-build"')
+    $manifestText = $manifestText.Replace('"version": "1.0.1"', '"version": "1.0.1+codex.test-build"')
     [IO.File]::WriteAllText($manifest, $manifestText, $Utf8NoBom)
     $sourceRouter = [IO.Path]::Combine($sourcePlugin, "scripts", "routerctl.ps1")
     $result = Invoke-Script $sourceRouter @("--source", $sourcePlugin, "--codex-home", $caseHome, "upgrade")
-    Assert-Contains $result.Output "version=1.0.0+codex.test-build"
+    Assert-Contains $result.Output "version=1.0.1+codex.test-build"
     $result = Invoke-Router $caseHome @("doctor")
-    Assert-Contains $result.Output "version=1.0.0+codex.test-build"
+    Assert-Contains $result.Output "version=1.0.1+codex.test-build"
 
     Write-Output "PASS test_routerctl.ps1 ($Passed assertions)"
 }

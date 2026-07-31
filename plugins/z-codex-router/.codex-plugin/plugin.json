@@ -1,6 +1,6 @@
 {
   "name": "z-codex-router",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "纯脚本、可审计且 fail-closed 的 Codex 任务路由策略。",
   "author": {
     "name": "antonynz"

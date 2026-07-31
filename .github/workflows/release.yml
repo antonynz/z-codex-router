@@ -21,7 +21,7 @@ jobs:
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Run script-only release gate
@@ -32,7 +32,7 @@ jobs:
     name: Release gate (Windows PowerShell 5.1)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Run script-only release gate
@@ -43,7 +43,7 @@ jobs:
     name: Release gate (PowerShell 7)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Run script-only release gate
@@ -55,7 +55,7 @@ jobs:
     needs: [test-posix, test-windows-powershell, test-powershell-core]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Verify tag and source version
@@ -64,7 +64,7 @@ jobs:
           expected=${GITHUB_REF_NAME#v}
           release=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' plugins/z-codex-router/release/manifest.json | sed -n '1p')
           plugin=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' plugins/z-codex-router/.codex-plugin/plugin.json | sed -n '1p')
-          test "$expected" = "1.0.0"
+          printf '%s\n' "$expected" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           test "$release" = "$expected"
           test "$plugin" = "$expected"
       - name: Verify rewritten history and package sources
@@ -75,38 +75,40 @@ jobs:
           sh scripts/test_release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: z-codex-router-1.0.0-source
+          name: z-codex-router-${{ github.ref_name }}-source
           path: |
-            dist/z-codex-router-1.0.0.tar.gz
-            dist/z-codex-router-1.0.0.zip
+            dist/z-codex-router-*.tar.gz
+            dist/z-codex-router-*.zip
             dist/SHA256SUMS
           if-no-files-found: error
 
   publish:
-    name: Replace GitHub v1.0.0 Release
+    name: Publish GitHub tag release
     needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
-          name: z-codex-router-1.0.0-source
+          name: z-codex-router-${{ github.ref_name }}-source
           path: dist
-      - name: Delete old Release and create script-only Release
+      - name: Create script-only Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: sh
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release delete "$GITHUB_REF_NAME" --yes
+            printf '%s\n' "release already exists: $GITHUB_REF_NAME" >&2
+            exit 1
           fi
+          expected=${GITHUB_REF_NAME#v}
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --latest \
             --title "Z Codex Router $GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md \
-            dist/z-codex-router-1.0.0.tar.gz \
-            dist/z-codex-router-1.0.0.zip \
+            "dist/z-codex-router-${expected}.tar.gz" \
+            "dist/z-codex-router-${expected}.zip" \
             dist/SHA256SUMS

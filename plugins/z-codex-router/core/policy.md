@@ -57,6 +57,11 @@
 - Scope/acceptance 偏差、阻塞或验收证据不足时，只向同一 thread 发送纠偏，并省略 `model` 与
   `thinking` 以保留设置。
 - 用户输入请求必须转交原用户，不得代答；最终完成前核对 acceptance、测试与保护路径。
+- 父协调根与执行根之间的 receipt、进展、纠偏、用户输入转交和最终回报应尽量跟随原用户的主要语言；
+  原用户使用中文时，线程间自然语言通信也尽量使用中文。只影响自然语言，不改写机器字段、tier、
+  model/effort、opaque token、路径、命令、错误码和协议键。
+- schema v1 下，C1 diagnosis 与 implementation 保持在同一个 Sol-high 线程内，不引入 schema v2
+  handoff。
 - 父协调只在 `completed`、`needs-attention` 或 `failed` 明确终态结束，不扩大外部副作用权限。
 
 ## 质量与安全

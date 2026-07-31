@@ -1,6 +1,6 @@
 # Agent 安装与生命周期协议
 
-本协议面向代表用户执行安装的 Codex Agent。公开版本固定为 `1.0.0`，实现为 POSIX `sh` 与 Windows
+本协议面向代表用户执行安装的 Codex Agent。公开版本固定为 `1.0.1`，实现为 POSIX `sh` 与 Windows
 PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 
 ## 不可越过的边界
@@ -25,8 +25,8 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 
 | 主机 | 归档 |
 | --- | --- |
-| macOS / Linux | `z-codex-router-1.0.0.tar.gz` |
-| Windows PowerShell | `z-codex-router-1.0.0.zip` |
+| macOS / Linux | `z-codex-router-1.0.1.tar.gz` |
+| Windows PowerShell | `z-codex-router-1.0.1.zip` |
 
 两份归档内容相同。校验要求：
 
@@ -35,12 +35,12 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 3. 下载归档 SHA-256 与清单完全相同。
 4. 归档拒绝绝对路径、`..`、重复 entry、链接和特殊文件。
 5. 解包树拒绝 Mach-O、ELF、PE/EXE 魔数。
-6. Plugin 与 release manifest 都必须是公开 `1.0.0`。
+6. Plugin 与 release manifest 都必须是公开 `1.0.1`。
 7. `.agents/plugins/marketplace.json`、plugin manifest、两种 controller 和 Router core 必须存在。
 
 Bootstrap 会把 marketplace source 复制到
-`<codex_home>/z-codex-router-marketplaces/1.0.0+codex.<timestamp>/`，只在该本地副本中更新 plugin
-manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.0.0`。
+`<codex_home>/z-codex-router-marketplaces/1.0.1+codex.<timestamp>/`，只在该本地副本中更新 plugin
+manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.0.1`。
 
 若 `z-codex-router` marketplace 已指向上述受管目录，重装会保留已注册 root 路径并原子替换其中的
 source；plugin 注册失败则恢复旧 source 并重新注册旧 plugin。若同名 marketplace 指向受管目录之外，
@@ -136,7 +136,7 @@ Rollback 只撤销最近完成的生命周期操作。若 `AGENTS.md` 在该操�
 
 ## Upgrade
 
-公开版本可以保持 `1.0.0`，本地 source identity 使用新的 `+codex.<timestamp>`。升级顺序：
+公开版本可以保持 `1.0.1`，本地 source identity 使用新的 `+codex.<timestamp>`。升级顺序：
 
 1. 新 controller 执行 `upgrade --dry-run`。
 2. 验证当前 managed prefix、payload、profile、override 与 transaction。

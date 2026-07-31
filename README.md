@@ -6,7 +6,7 @@
 
 **Choose the right model for each Codex task: auditable, recoverable, and fail-closed.**
 
-公开版本 / Public version: `1.0.0`
+公开版本 / Public version: `1.0.1`
 
 ## 中文
 
@@ -49,16 +49,23 @@ host、project/cwd 和 createdAt 时间窗，0 个匹配继续有界等待，多
 偏差、阻塞或缺少验收证据时仅纠偏同一任务并保留 model/thinking，用户输入请求交还用户。父核对
 acceptance、测试和保护路径后，才以 `completed`、`needs-attention` 或 `failed` 结束协调。
 
+宿主/会话根建议使用 `gpt-5.6-sol` / `medium` 作为理解、分类、下发、监督和验收的协调根；这只是
+自然语言协调建议，不覆盖 A0 的 `current-qualified-root` / `runtime-qualified`，也不改变
+`verified`、`mismatch`、`unobservable` 三态与 fail-closed 语义。父协调根与执行根之间的 receipt、
+进展、纠偏、用户输入转交和最终回报，应尽量跟随原用户的主要语言；原用户使用中文时，线程间自然语言
+通信也尽量使用中文。机器字段、tier、model/effort、opaque token、路径、命令、错误码和协议键保持
+原样。
+
 ### 安装资产
 
-GitHub v1.0.0 Release 只包含：
+GitHub v1.0.1 Release 只包含：
 
-- `z-codex-router-1.0.0.tar.gz`：POSIX 安装与源码。
-- `z-codex-router-1.0.0.zip`：PowerShell 安装与相同源码。
+- `z-codex-router-1.0.1.tar.gz`：POSIX 安装与源码。
+- `z-codex-router-1.0.1.zip`：PowerShell 安装与相同源码。
 - `SHA256SUMS`：两份归档的 SHA-256。
 
-两份归档解包后的文件内容相同。公开 manifest、标签和 Release 均保持 `1.0.0`；本地 Codex marketplace
-cache 会使用 `1.0.0+codex.<timestamp>`，让同版本重装能够被新任务重新载入。
+两份归档解包后的文件内容相同。公开 manifest、标签和 Release 均保持 `1.0.1`；本地 Codex marketplace
+cache 会使用 `1.0.1+codex.<timestamp>`，让同版本重装能够被新任务重新载入。
 同版本重装会原子刷新已注册的受管 marketplace root；失败时恢复旧 source/plugin。指向受管 cache
 之外的同名 marketplace 会返回冲突，不会被删除或接管。
 
@@ -73,13 +80,13 @@ Linux 没有固定的官方 ChatGPT desktop 路径，安装器仅检查 PATH、�
 macOS/Linux：
 
 ```sh
-version=1.0.0
+version=1.0.1
 curl --fail --location \
   --remote-name-all \
   "https://github.com/antonynz/z-codex-router/releases/download/v${version}/z-codex-router-${version}.tar.gz" \
   "https://github.com/antonynz/z-codex-router/releases/download/v${version}/SHA256SUMS"
-count=$(awk '$2 == "z-codex-router-1.0.0.tar.gz" { count++ } END { print count + 0 }' SHA256SUMS)
-expected=$(awk '$2 == "z-codex-router-1.0.0.tar.gz" { print $1 }' SHA256SUMS)
+count=$(awk '$2 == "z-codex-router-1.0.1.tar.gz" { count++ } END { print count + 0 }' SHA256SUMS)
+expected=$(awk '$2 == "z-codex-router-1.0.1.tar.gz" { print $1 }' SHA256SUMS)
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "z-codex-router-${version}.tar.gz" | awk '{ print tolower($1) }')
 else
@@ -94,7 +101,7 @@ sh install.sh --source . --enable
 Windows PowerShell 5.1+：
 
 ```powershell
-$Version = "1.0.0"
+$Version = "1.0.1"
 Invoke-WebRequest `
   -Uri "https://github.com/antonynz/z-codex-router/releases/download/v$Version/z-codex-router-$Version.zip" `
   -OutFile "z-codex-router-$Version.zip"
@@ -236,20 +243,28 @@ BOM). Doctor reports its byte range, effective `project_doc_max_bytes`, the effe
 instruction source, global override shadowing, and the project/nested instruction chain for
 `doctor --cwd`.
 
+The recommended host/session coordination root is `gpt-5.6-sol` / `medium`. This is a natural-language
+coordination recommendation only: it does not override A0's `current-qualified-root` /
+`runtime-qualified` semantics or the three-state `verified` / `mismatch` / `unobservable` fail-closed
+policy. Receipt updates, progress, corrections, user-input handoff, and final reports should follow the
+original user's primary language; when the user writes Chinese, inter-thread natural-language communication
+should preferably remain Chinese. Machine fields, tiers, model/effort values, opaque tokens, paths, commands,
+error codes, and protocol keys remain unchanged.
+
 Explicitly enabling the Router persistently authorizes one `create_thread` call for route dispatch
 and `list_threads` / `wait_threads` / `send_message_to_thread` coordination of that same task until
 uninstall: A0 stays in the coordinating root, A1-C3 create exactly one execution root, and a valid
 receipt execution root never recurses. This authorization does not cover external messages,
 publishing, production changes, or other external side effects.
 
-The v1.0.0 Release has exactly two universal source assets plus checksums:
+The v1.0.1 Release has exactly two universal source assets plus checksums:
 
-- `z-codex-router-1.0.0.tar.gz`
-- `z-codex-router-1.0.0.zip`
+- `z-codex-router-1.0.1.tar.gz`
+- `z-codex-router-1.0.1.zip`
 - `SHA256SUMS`
 
-Public manifests and the tag remain `1.0.0`. Local Codex marketplace copies use
-`1.0.0+codex.<timestamp>` as cache metadata.
+Public manifests and the tag remain `1.0.1`. Local Codex marketplace copies use
+`1.0.1+codex.<timestamp>` as cache metadata.
 
 The installer can use a capable Codex executable bundled with the desktop app even when `codex`
 is not on `PATH`. It probes explicit overrides first, then `PATH`, macOS ChatGPT/Codex app bundles,

@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:Format = "script-v1"
-$script:PublicVersion = "1.0.0"
+$script:PublicVersion = "1.0.1"
 $script:BeginMarker = "<!-- z-codex-router:begin"
 $script:EndMarker = "<!-- z-codex-router:end id=z-codex-router -->"
 $script:DefaultBudget = 32768
@@ -402,6 +402,28 @@ function Get-ActivePayloadRoot {
     return $script:SourceRoot
 }
 
+function Get-SelectedStableProfile {
+    param([string]$Payload)
+    $portable = [IO.Path]::Combine($Payload, "profiles", "portable", "default.toml")
+    if (-not [IO.File]::Exists($portable) -or (Test-ReparsePoint $portable)) {
+        Fail-Zcr "E_PROFILE_INVALID" "portable default profile is missing"
+    }
+    $text = [IO.File]::ReadAllText($portable, $script:Utf8NoBom)
+    $matches = [Regex]::Matches($text, '(?m)^[\s]*stable_profile[\s]*=[\s]*"([^"]+)"[\s]*$')
+    if ($matches.Count -ne 1) {
+        Fail-Zcr "E_PROFILE_INVALID" "portable default must select exactly one stable profile"
+    }
+    $selected = $matches[0].Groups[1].Value
+    if ($selected -notmatch '^stable/[^/]+\.toml$') {
+        Fail-Zcr "E_PROFILE_INVALID" "stable profile selection must remain under profiles/stable"
+    }
+    $path = [IO.Path]::Combine($Payload, "profiles", $selected.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    if (-not [IO.File]::Exists($path) -or (Test-ReparsePoint $path)) {
+        Fail-Zcr "E_PROFILE_INVALID" "selected stable profile is missing"
+    }
+    return $path
+}
+
 function Validate-EffectiveProfile {
     if ([IO.File]::Exists($script:ProfileFile)) {
         if (Test-ReparsePoint $script:ProfileFile) {
@@ -416,7 +438,7 @@ function Validate-EffectiveProfile {
     }
     else {
         $payload = Get-ActivePayloadRoot
-        $path = [IO.Path]::Combine($payload, "profiles", "stable", "current-gpt-5.6-reference.toml")
+        $path = Get-SelectedStableProfile $payload
         $script:EffectiveProfileMapping = Normalize-Profile $path "default"
         $script:EffectiveProfileSource = "default"
         $script:EffectiveProfilePath = $path
@@ -460,8 +482,8 @@ function Validate-Source {
         "agents/roles/reviewer.toml",
         "agents/roles/runtime_validator.toml",
         "profiles/portable/default.toml",
-        "profiles/stable/current-gpt-5.6-reference.toml",
         "profiles/candidate/example-next-model.toml",
+        "profiles/candidate/current-gpt-5.6-no-luna-compatibility-candidate.toml",
         "profiles/schema.json",
         "release/manifest.json",
         "compatibility.json"
@@ -477,7 +499,7 @@ function Validate-Source {
             Fail-Zcr "E_SOURCE_INVALID" "required skill is missing: $skill"
         }
     }
-    $stable = [IO.Path]::Combine($script:SourceRoot, "profiles", "stable", "current-gpt-5.6-reference.toml")
+    $stable = Get-SelectedStableProfile $script:SourceRoot
     [void](Normalize-Profile $stable "default")
     $candidate = [IO.Path]::Combine($script:SourceRoot, "profiles", "candidate", "example-next-model.toml")
     $candidateText = [IO.File]::ReadAllText($candidate, $script:Utf8NoBom)

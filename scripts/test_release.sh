@@ -13,8 +13,8 @@ trap cleanup 0
 trap 'exit 130' HUP INT TERM
 
 sh "$ROOT/scripts/package_release.sh" --out "$TEST_ROOT/dist" >"$TEST_ROOT/package-output"
-tar_asset=$TEST_ROOT/dist/z-codex-router-1.0.0.tar.gz
-zip_asset=$TEST_ROOT/dist/z-codex-router-1.0.0.zip
+tar_asset=$TEST_ROOT/dist/z-codex-router-1.0.1.tar.gz
+zip_asset=$TEST_ROOT/dist/z-codex-router-1.0.1.zip
 [ -f "$tar_asset" ] && [ -f "$zip_asset" ] && [ -f "$TEST_ROOT/dist/SHA256SUMS" ]
 
 mkdir -p "$TEST_ROOT/tar"
@@ -40,11 +40,11 @@ hash_tree() {
   ) >"$output"
 }
 
-hash_tree "$TEST_ROOT/tar/z-codex-router-1.0.0" "$TEST_ROOT/tar-tree"
-hash_tree "$TEST_ROOT/zip/z-codex-router-1.0.0" "$TEST_ROOT/zip-tree"
+hash_tree "$TEST_ROOT/tar/z-codex-router-1.0.1" "$TEST_ROOT/tar-tree"
+hash_tree "$TEST_ROOT/zip/z-codex-router-1.0.1" "$TEST_ROOT/zip-tree"
 cmp "$TEST_ROOT/tar-tree" "$TEST_ROOT/zip-tree"
 
-tar_root=$TEST_ROOT/tar/z-codex-router-1.0.0
+tar_root=$TEST_ROOT/tar/z-codex-router-1.0.1
 home=$TEST_ROOT/home
 mkdir -p "$home"
 sh -n "$tar_root/install.sh"

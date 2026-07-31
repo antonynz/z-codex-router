@@ -9,12 +9,14 @@ Profile routing 优化：
   执行轨迹。
 - **C1**: Sol medium → Sol high — 为未知需求、架构取舍和高风险判断提供更高质量的方向性
   决策。
-- 新增 `current-gpt-5.6-balanced-luna-max-candidate` candidate profile 作为下一轮评估候选。
+- 新增 `current-gpt-5.6-no-luna-compatibility-candidate` candidate profile，面向不支持 Luna 的
+  destination 提供不同 routing 的兼容评估；balanced stable mapping 保持不变。
 - 更新 reference profile 元数据，标注交叉基准评估依据（CursorBench 3.2、DeepSWE、
   GPT-5.6 官方定位）。
 
-默认根模型建议：**Sol medium**（理解 → 分类 → 下发 → 监督 → 验收的协调角色），
-不由 profile 本身管控。
+默认宿主/会话根模型建议：**Sol medium**（理解 → 分类 → 下发 → 监督 → 验收的协调角色），
+不由 profile 本身管控；该建议不覆盖 A0 的 current-qualified-root/runtime-qualified 或三态
+fail-closed 语义。父协调与执行根的自然语言通信尽量跟随原用户主要语言，机器字段保持原样。
 
 ---
 

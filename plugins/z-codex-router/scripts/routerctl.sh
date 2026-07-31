@@ -3,7 +3,7 @@ set -eu
 
 PROGRAM=routerctl
 FORMAT=script-v1
-PUBLIC_VERSION=1.0.0
+PUBLIC_VERSION=1.0.1
 BEGIN_MARKER='<!-- z-codex-router:begin'
 END_MARKER='<!-- z-codex-router:end id=z-codex-router -->'
 DEFAULT_BUDGET=32768
@@ -367,6 +367,25 @@ active_payload_root() {
   fi
 }
 
+selected_stable_profile() {
+  payload=$1
+  portable=$payload/profiles/portable/default.toml
+  [ -f "$portable" ] && [ ! -L "$portable" ] ||
+    fail E_PROFILE_INVALID "portable default profile is missing"
+  selected=$(sed -n 's/^[[:space:]]*stable_profile[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' \
+    "$portable")
+  [ "$(printf '%s\n' "$selected" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1 ] ||
+    fail E_PROFILE_INVALID "portable default must select exactly one stable profile"
+  case "$selected" in
+    stable/*.toml) ;;
+    *) fail E_PROFILE_INVALID "stable profile selection must remain under profiles/stable" ;;
+  esac
+  profile=$payload/profiles/$selected
+  [ -f "$profile" ] && [ ! -L "$profile" ] ||
+    fail E_PROFILE_INVALID "selected stable profile is missing"
+  printf '%s\n' "$profile"
+}
+
 validate_effective_profile() {
   normalized=$WORK_DIR/profile-normalized
   if [ -e "$PROFILE_FILE" ]; then
@@ -377,7 +396,7 @@ validate_effective_profile() {
     EFFECTIVE_PROFILE_PATH=$PROFILE_FILE
   else
     payload=$(active_payload_root)
-    default_profile=$payload/profiles/stable/current-gpt-5.6-reference.toml
+    default_profile=$(selected_stable_profile "$payload")
     profile_normalize "$default_profile" default "$normalized"
     EFFECTIVE_PROFILE_SOURCE=default
     EFFECTIVE_PROFILE_PATH=$default_profile
@@ -419,8 +438,8 @@ validate_source() {
     agents/roles/reviewer.toml \
     agents/roles/runtime_validator.toml \
     profiles/portable/default.toml \
-    profiles/stable/current-gpt-5.6-reference.toml \
     profiles/candidate/example-next-model.toml \
+    profiles/candidate/current-gpt-5.6-no-luna-compatibility-candidate.toml \
     profiles/schema.json \
     release/manifest.json \
     compatibility.json; do
@@ -431,7 +450,8 @@ validate_source() {
     [ -f "$SOURCE_ROOT/skills/$skill/SKILL.md" ] ||
       fail E_SOURCE_INVALID "required skill is missing: $skill"
   done
-  profile_normalize "$SOURCE_ROOT/profiles/stable/current-gpt-5.6-reference.toml" default \
+  source_stable_profile=$(selected_stable_profile "$SOURCE_ROOT")
+  profile_normalize "$source_stable_profile" default \
     "$WORK_DIR/source-profile"
   candidate=$SOURCE_ROOT/profiles/candidate/example-next-model.toml
   [ "$(sed -n 's/^[[:space:]]*status[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$candidate" |
