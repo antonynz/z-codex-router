@@ -82,10 +82,10 @@ Assert-Text $Setup "token+host+project/cwd+createdAt"
 Assert-Text $Router "profiles/portable/default.toml"
 Assert-Text $Router "[selection].stable_profile"
 Assert-Text $Router "fail closed"
-Assert-Text $Router "原用户的主要语言"
+Assert-Text $Router (-join @([char]0x539F, [char]0x7528, [char]0x6237, [char]0x7684, [char]0x4E3B, [char]0x8981, [char]0x8BED, [char]0x8A00))
 Assert-Text $Router "schema v1"
-Assert-Text $Policy "自然语言通信"
-Assert-Text $Policy "机器字段、tier、"
+Assert-Text $Policy (-join @([char]0x81EA, [char]0x7136, [char]0x8BED, [char]0x8A00, [char]0x901A, [char]0x4FE1))
+Assert-Text $Policy (-join @([char]0x673A, [char]0x5668, [char]0x5B57, [char]0x6BB5, [char]0x3001, [char]0x0074, [char]0x0069, [char]0x0065, [char]0x0072, [char]0x3001))
 Assert-Text $Plugin '"version": "1.0.1"'
 Assert-Text $ReleaseManifest '"version": "1.0.1"'
 
