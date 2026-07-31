@@ -1,3 +1,23 @@
+# Z Codex Router v1.0.1
+
+Profile routing 优化：
+
+- **B1**: Terra high → Luna max — 利用 Luna 降价 80% 后的极致性价比，适合范围明确、
+  工作量大的多文件工程任务，允许低成本长链执行和反复测试修复。
+- **B2**: Terra xhigh → Terra max — 应对异步状态、并发、性能、跨平台差异等复杂状态问题，
+  Terra max 在 CursorBench (64.9%) 和 DeepSWE (70%±3%) 中提供比 Luna max 更紧凑的
+  执行轨迹。
+- **C1**: Sol medium → Sol high — 为未知需求、架构取舍和高风险判断提供更高质量的方向性
+  决策。
+- 新增 `current-gpt-5.6-balanced-luna-max-candidate` candidate profile 作为下一轮评估候选。
+- 更新 reference profile 元数据，标注交叉基准评估依据（CursorBench 3.2、DeepSWE、
+  GPT-5.6 官方定位）。
+
+默认根模型建议：**Sol medium**（理解 → 分类 → 下发 → 监督 → 验收的协调角色），
+不由 profile 本身管控。
+
+---
+
 # Z Codex Router v1.0.0
 
 本次 v1.0.0 重新定义为纯脚本公开基线：

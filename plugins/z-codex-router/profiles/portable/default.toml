@@ -67,7 +67,7 @@ completion_gate = "acceptance-tests-protection-paths"
 
 [selection]
 stable_profile = "stable/current-gpt-5.6-reference.toml"
-candidate_profiles = ["candidate/example-next-model.toml"]
+candidate_profiles = ["candidate/example-next-model.toml", "candidate/current-gpt-5.6-balanced-luna-max-candidate.toml"]
 allow_candidate_as_default = false
 silent_fallback = false
 

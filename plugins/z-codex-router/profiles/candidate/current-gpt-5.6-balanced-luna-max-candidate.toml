@@ -1,10 +1,10 @@
 schema_version = 1
 
 [metadata]
-name = "current-gpt-5.6-reference"
-status = "reference"
-purpose = "以 Sol 负责不确定性和高风险判断，以 Luna 承担明确工程执行，以 Terra 承担复杂状态和长程自治。基于 CursorBench 3.2、DeepSWE 及 GPT-5.6 官方定位交叉评估。"
-evaluation_state = "cross-benchmark-reference"
+name = "current-gpt-5.6-balanced-luna-max-candidate"
+status = "candidate"
+purpose = "以 Sol 负责不确定性和高风险判断，以 Luna 承担明确工程执行，以 Terra 承担复杂状态和长程自治。"
+evaluation_state = "cross-benchmark-candidate"
 
 [compatibility]
 runtime_observability = "three-state"

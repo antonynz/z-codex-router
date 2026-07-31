@@ -1,5 +1,14 @@
 # 变更日志
 
+## 1.0.1 - 2026-07-31
+
+- 优化 GPT-5.6 profile routing 映射：B1 从 Terra high 改为 Luna max（利用 Luna 降价 80% 后的
+  极致性价比，适合范围明确、工作量大的执行任务）；B2 从 Terra xhigh 改为 Terra max（应对
+  异步/并发/性能/跨平台等复杂状态问题）；C1 从 Sol medium 改为 Sol high（为未知架构取舍
+  提供更高质量的判断）。
+- 新增 balanced-luna-max candidate profile（同 routing 映射），作为下一轮默认 profile 候选。
+- 基于 CursorBench 3.2、DeepSWE 及 GPT-5.6 官方定位交叉评估更新 reference profile 说明。
+
 ## 1.0.0 - 2026-07-30
 
 - 将控制面、测试和打包重构为 POSIX sh 与 Windows PowerShell 5.1+。
