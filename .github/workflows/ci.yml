@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run POSIX lifecycle, policy, source and release tests
+      - name: Run POSIX lifecycle, docs/bootstrap/user-command, policy and release tests
         shell: sh
         run: sh scripts/test_all.sh
       - name: Scan all reachable Git blobs for compiled executables
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run Windows PowerShell 5.1 lifecycle and release tests
+      - name: Run Windows PowerShell 5.1 lifecycle, docs/bootstrap/user-command and release tests
         shell: powershell
         run: .\scripts\test_all.ps1
       - name: Check rewritten history paths
@@ -49,6 +49,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run PowerShell 7 lifecycle and release tests
+      - name: Run PowerShell 7 lifecycle, docs/bootstrap/user-command and release tests
         shell: pwsh
         run: ./scripts/test_all.ps1

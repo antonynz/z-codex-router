@@ -9,6 +9,10 @@ foreach ($relative in @(
     "plugins/z-codex-router/scripts/routerctl.ps1",
     "scripts/test_routerctl.ps1",
     "scripts/test_install.ps1",
+    "scripts/test_docs.ps1",
+    "scripts/test_bootstrap.ps1",
+    "scripts/test_user_commands.ps1",
+    "scripts/test_docs_bootstrap.ps1",
     "scripts/test_policy.ps1",
     "scripts/verify_source.ps1",
     "scripts/package_release.ps1",
@@ -29,7 +33,9 @@ foreach ($relative in @(
 
 foreach ($scriptName in @(
     "test_routerctl.ps1",
-    "test_install.ps1",
+    "test_docs.ps1",
+    "test_bootstrap.ps1",
+    "test_user_commands.ps1",
     "test_policy.ps1",
     "verify_source.ps1",
     "test_release.ps1"

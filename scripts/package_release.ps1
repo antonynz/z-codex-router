@@ -4,17 +4,26 @@ param([string]$Out = $(Join-Path ([IO.Path]::GetFullPath([IO.Path]::Combine($PSS
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 $Root = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, ".."))
-$Version = "1.0.1"
 $Utf8NoBom = New-Object Text.UTF8Encoding($false)
 $Work = [IO.Path]::Combine([IO.Path]::GetTempPath(), "zcr-package-" + [Guid]::NewGuid().ToString("N"))
+
+function Get-ManifestVersion {
+    param([string]$Path)
+    $text = [IO.File]::ReadAllText($Path, $Utf8NoBom)
+    $match = [Regex]::Match($text, '(?m)^\s*"version"\s*:\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $match.Success) { throw "E_RELEASE_VERSION: manifest version is invalid: $Path" }
+    return $match.Groups[1].Value
+}
+
+$Version = Get-ManifestVersion ([IO.Path]::Combine($Root, "plugins", "z-codex-router", "release", "manifest.json"))
 
 try {
     $stage = [IO.Path]::Combine($Work, "z-codex-router-$Version")
     [void][IO.Directory]::CreateDirectory($stage)
     foreach ($entry in @(
         ".agents", ".gitattributes", ".github", ".gitignore", "AGENT_INSTALL.md",
-        "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE", "README.md", "RELEASE_NOTES.md",
-        "SECURITY.md", "docs", "install.ps1", "install.sh", "plugins", "scripts", "submission"
+        "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE", "README.md", "README.en.md", "RELEASE_NOTES.md",
+        "SECURITY.md", "docs", "install.ps1", "install.sh", "zcr", "zcr.ps1", "zcr.cmd", "plugins", "scripts", "submission"
     )) {
         $source = [IO.Path]::Combine($Root, $entry)
         if (Test-Path -LiteralPath $source) {
@@ -25,11 +34,23 @@ try {
         [IO.File]::Delete($junk.FullName)
     }
 
-    $releaseText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", "release", "manifest.json"))
-    $pluginText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", ".codex-plugin", "plugin.json"))
-    if ($releaseText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.1"' -or
-        $pluginText -notmatch '(?m)^\s*"version"\s*:\s*"1\.0\.1"') {
-        throw "E_RELEASE_VERSION: package manifests must both be 1.0.1"
+    $releaseVersion = Get-ManifestVersion ([IO.Path]::Combine($stage, "plugins", "z-codex-router", "release", "manifest.json"))
+    $pluginVersion = Get-ManifestVersion ([IO.Path]::Combine($stage, "plugins", "z-codex-router", ".codex-plugin", "plugin.json"))
+    $installShText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "install.sh"), $Utf8NoBom)
+    $installPsText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "install.ps1"), $Utf8NoBom)
+    $routerShText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", "scripts", "routerctl.sh"), $Utf8NoBom)
+    $routerPsText = [IO.File]::ReadAllText([IO.Path]::Combine($stage, "plugins", "z-codex-router", "scripts", "routerctl.ps1"), $Utf8NoBom)
+    $escapedVersion = [Regex]::Escape($Version)
+    $installShPattern = '(?m)^VERSION=' + $escapedVersion + '$'
+    $installPsPattern = '(?m)^\s*\[string\]\$Version\s*=\s*"' + $escapedVersion + '"'
+    $routerShPattern = '(?m)^PUBLIC_VERSION=' + $escapedVersion + '$'
+    $routerPsPattern = '(?m)^\s*\$script:PublicVersion\s*=\s*"' + $escapedVersion + '"'
+    if ($releaseVersion -ne $Version -or $pluginVersion -ne $Version -or
+        $installShText -notmatch $installShPattern -or
+        $installPsText -notmatch $installPsPattern -or
+        $routerShText -notmatch $routerShPattern -or
+        $routerPsText -notmatch $routerPsPattern) {
+        throw "E_RELEASE_VERSION: package version drift (expected $Version)"
     }
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($Out))
     $tarAsset = [IO.Path]::Combine([IO.Path]::GetFullPath($Out), "z-codex-router-$Version.tar.gz")

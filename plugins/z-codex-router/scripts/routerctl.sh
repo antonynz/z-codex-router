@@ -3,7 +3,7 @@ set -eu
 
 PROGRAM=routerctl
 FORMAT=script-v1
-PUBLIC_VERSION=1.0.1
+PUBLIC_VERSION=1.1.0
 BEGIN_MARKER='<!-- z-codex-router:begin'
 END_MARKER='<!-- z-codex-router:end id=z-codex-router -->'
 DEFAULT_BUDGET=32768
@@ -21,22 +21,65 @@ Z Codex Router pure-script control plane
 Usage:
   routerctl.sh [--source PATH] [--codex-home PATH] dry-run
   routerctl.sh [--source PATH] [--codex-home PATH] install
+  routerctl.sh [--source PATH] [--codex-home PATH] enable
+  routerctl.sh [--source PATH] [--codex-home PATH] disable
+  routerctl.sh [--source PATH] [--codex-home PATH] status [--cwd PATH]
   routerctl.sh [--source PATH] [--codex-home PATH] doctor [--cwd PATH]
   routerctl.sh [--source PATH] [--codex-home PATH] upgrade [--dry-run]
   routerctl.sh [--source PATH] [--codex-home PATH] recover
   routerctl.sh [--source PATH] [--codex-home PATH] rollback
-  routerctl.sh [--source PATH] [--codex-home PATH] uninstall
+  routerctl.sh [--source PATH] [--codex-home PATH] uninstall [--purge-profile]
   routerctl.sh [--source PATH] [--codex-home PATH] legacy-cleanup [--dry-run]
-  routerctl.sh [--source PATH] [--codex-home PATH] profile show|init|validate|reset
+  routerctl.sh [--source PATH] [--codex-home PATH] profile show|init|validate|reset|backups
   routerctl.sh [--source PATH] [--codex-home PATH] profile set TIER MODEL EFFORT
   routerctl.sh [--source PATH] [--codex-home PATH] profile restore BACKUP
 EOF
+}
+
+failure_guidance() {
+  code=$1
+  case "$code" in
+    E_TRANSACTION_PENDING|E_TRANSACTION_DRIFT|E_TRANSACTION_INVALID)
+      printf '%s\n' "state=recovery-required" "impact=lifecycle-state-may-be-incomplete" \
+        "retry_safe=false" "next_command=zcr recover"
+      ;;
+    E_LOCKED)
+      printf '%s\n' "state=operation-in-progress" "impact=no-write-by-this-command" \
+        "retry_safe=true" "next_command=zcr status"
+      ;;
+    E_GLOBAL_OVERRIDE_ACTIVE)
+      printf '%s\n' "state=shadowed" "impact=global-routing-not-modified" \
+        "retry_safe=true" "next_command=zcr status"
+      ;;
+    E_MANAGED_BLOCK_DRIFT|E_PAYLOAD_INVALID|E_COMMIT_DRIFT|E_ROLLBACK_DRIFT)
+      printf '%s\n' "state=review-required" "impact=protected-user-state-preserved" \
+        "retry_safe=true" "next_command=zcr status"
+      ;;
+    E_PROFILE_*)
+      printf '%s\n' "state=profile-needs-attention" "impact=profile-not-modified" \
+        "retry_safe=true" "next_command=zcr profile show"
+      ;;
+    E_LEGACY_*)
+      printf '%s\n' "state=legacy-cleanup-required" "impact=global-routing-not-modified" \
+        "retry_safe=false" "next_command=zcr legacy-cleanup --dry-run"
+      ;;
+    E_NOT_INSTALLED|E_UPGRADE_REQUIRED)
+      printf '%s\n' "state=not-enabled" "impact=global-routing-inactive" \
+        "retry_safe=true" "next_command=zcr enable"
+      ;;
+    *)
+      printf '%s\n' "state=failed" "impact=operation-not-completed" \
+        "retry_safe=true" "next_command=zcr status"
+      ;;
+  esac
 }
 
 fail() {
   code=$1
   shift
   printf '%s: %s\n' "$code" "$*" >&2
+  printf '%s\n' "code=$code" >&2
+  failure_guidance "$code" >&2
   exit 1
 }
 
@@ -244,7 +287,7 @@ plugin_version() {
 copy_payload() {
   destination=$1
   mkdir -p "$destination"
-  for name in agents core profiles release compatibility.json; do
+  for name in agents core profiles release scripts compatibility.json; do
     [ -e "$SOURCE_ROOT/$name" ] ||
       fail E_SOURCE_INVALID "required payload entry is missing: $name"
     cp -R "$SOURCE_ROOT/$name" "$destination/"
@@ -442,6 +485,8 @@ validate_source() {
     profiles/candidate/current-gpt-5.6-no-luna-compatibility-candidate.toml \
     profiles/schema.json \
     release/manifest.json \
+    scripts/routerctl.sh \
+    scripts/routerctl.ps1 \
     compatibility.json; do
     [ -f "$SOURCE_ROOT/$required" ] ||
       fail E_SOURCE_INVALID "required source file is missing: $required"
@@ -572,7 +617,11 @@ legacy_present() {
     return 0
   fi
   if [ -d "$ROUTER_ROOT" ] && ! is_new_install; then
-    entries=$(find "$ROUTER_ROOT" -mindepth 1 -maxdepth 1 -print -quit)
+    # A disabled script-v1 installation intentionally retains payload and
+    # rollback backups so `zcr enable` can work without a manual source path.
+    # Those known directories are not evidence of a legacy installation.
+    entries=$(find "$ROUTER_ROOT" -mindepth 1 -maxdepth 1 \
+      ! -name versions ! -name backups -print -quit)
     [ -n "$entries" ] && return 0
   fi
   return 1
@@ -833,9 +882,15 @@ install_or_upgrade() {
     current_hash=$(read_value "$CURRENT_DIR/payload_sha256")
     if [ "$current_version" = "$SOURCE_VERSION" ] &&
       [ "$current_hash" = "$SOURCE_PAYLOAD_HASH" ]; then
-      printf '%s\n' "code=OK_NO_CHANGE" "action=$action" "version=$current_version" \
+      if [ "$action" = enable ]; then
+        result_code=OK_ENABLED
+      else
+        result_code=OK_NO_CHANGE
+      fi
+      printf '%s\n' "code=$result_code" "action=$action" "state=enabled" \
+        "impact=global-routing-active" "retry_safe=true" "version=$current_version" \
         "changed=false" "profile_source=$EFFECTIVE_PROFILE_SOURCE" \
-        "profile_hash=$EFFECTIVE_PROFILE_HASH"
+        "profile_hash=$EFFECTIVE_PROFILE_HASH" "next_command=zcr status"
       return
     fi
     [ "$action" = upgrade ] ||
@@ -853,10 +908,11 @@ install_or_upgrade() {
   prepared_from_agents_hash=$(hash_optional "$AGENTS_FILE")
   prepared_from_current_hash=$(state_tree_hash_optional)
   if [ "$dry_run" -eq 1 ]; then
-    printf '%s\n' "code=OK_DRY_RUN" "action=$action" "version=$SOURCE_VERSION" \
+    printf '%s\n' "code=OK_DRY_RUN" "action=$action" "state=planned" \
+      "impact=global-routing-unchanged" "retry_safe=true" "version=$SOURCE_VERSION" \
       "payload_sha256=$SOURCE_PAYLOAD_HASH" "agents_prefix_bytes=$PREFIX_BYTES" \
       "profile_source=$EFFECTIVE_PROFILE_SOURCE" "profile_hash=$EFFECTIVE_PROFILE_HASH" \
-      "changed=true" "next_step=start-a-new-task-after-write"
+      "changed=true" "next_command=zcr enable"
     return
   fi
 
@@ -905,10 +961,11 @@ install_or_upgrade() {
   rm -rf -- "$old_current"
   rm -rf -- "$TRANSACTION_DIR"
   release_lock
-  printf '%s\n' "code=OK_ENABLED" "action=$action" "version=$SOURCE_VERSION" \
+  printf '%s\n' "code=OK_ENABLED" "action=$action" "state=enabled" \
+    "impact=global-routing-active" "retry_safe=true" "version=$SOURCE_VERSION" \
     "payload_sha256=$SOURCE_PAYLOAD_HASH" "backup=$backup" "changed=true" \
     "profile_source=$EFFECTIVE_PROFILE_SOURCE" "profile_hash=$EFFECTIVE_PROFILE_HASH" \
-    "next_step=start-a-new-task"
+    "next_command=zcr status"
 }
 
 parse_budget_file() {
@@ -950,14 +1007,30 @@ collect_directory_chain() {
 }
 
 doctor_command() {
+  requested_action=${1:-doctor}
   ensure_no_transaction
   if legacy_present; then
     fail E_LEGACY_INSTALL_DETECTED \
       "legacy state requires explicit legacy-cleanup before a fresh script install"
   fi
   if ! is_new_install; then
-    printf '%s\n' "code=OK_NOT_ENABLED" "changed=false" \
-      "global_override=$([ -s "$GLOBAL_OVERRIDE" ] 2>/dev/null && printf active || printf absent)"
+    if [ "$requested_action" = status ]; then
+      result_code=OK_STATUS
+      result_action=status
+      result_state=disabled
+      result_impact=global-routing-inactive
+      next_command='zcr enable'
+    else
+      result_code=OK_NOT_ENABLED
+      result_action=doctor
+      result_state=disabled
+      result_impact=global-routing-inactive
+      next_command='zcr enable'
+    fi
+    printf '%s\n' "code=$result_code" "action=$result_action" "state=$result_state" \
+      "impact=$result_impact" "retry_safe=true" "changed=false" \
+      "global_override=$([ -s "$GLOBAL_OVERRIDE" ] 2>/dev/null && printf active || printf absent)" \
+      "next_command=$next_command"
     return
   fi
   check_global_override
@@ -1002,13 +1075,47 @@ doctor_command() {
     fail E_MANAGED_BLOCK_OUTSIDE_INSTRUCTION_BUDGET \
       "managed block ends at byte $block_end, beyond effective budget $budget"
   fi
-  printf '%s\n' "code=OK_ENABLED" "version=$(read_value "$CURRENT_DIR/version")" \
+  if [ "$requested_action" = status ]; then
+    result_code=OK_STATUS
+    result_action=status
+    next_command='zcr doctor'
+  else
+    result_code=OK_ENABLED
+    result_action=doctor
+    next_command='zcr status'
+  fi
+  printf '%s\n' "code=$result_code" "action=$result_action" "state=enabled" \
+    "impact=global-routing-active" "retry_safe=true" "version=$(read_value "$CURRENT_DIR/version")" \
     "payload_sha256=$(read_value "$CURRENT_DIR/payload_sha256")" \
     "instruction_source=$AGENTS_FILE" "managed_block_start=$block_start" \
     "managed_block_end=$block_end" "project_doc_max_bytes=$budget" \
     "instruction_cwd=$resolved_cwd" "project_instruction_count=$chain_count" \
     "profile_source=$EFFECTIVE_PROFILE_SOURCE" "profile_path=$EFFECTIVE_PROFILE_PATH" \
-    "profile_hash=$EFFECTIVE_PROFILE_HASH" "changed=false"
+    "profile_hash=$EFFECTIVE_PROFILE_HASH" "changed=false" "next_command=$next_command"
+}
+
+status_command() {
+  # Status is deliberately non-mutating and turns the common recovery and
+  # shadowing states into actionable records instead of opaque failures.
+  if [ -d "$TRANSACTION_DIR" ]; then
+    printf '%s\n' "code=OK_STATUS" "action=status" "state=recovery-required" \
+      "impact=lifecycle-state-may-be-incomplete" "retry_safe=false" "changed=false" \
+      "next_command=zcr recover"
+    return
+  fi
+  if legacy_present; then
+    printf '%s\n' "code=OK_STATUS" "action=status" "state=legacy-cleanup-required" \
+      "impact=global-routing-not-modified" "retry_safe=false" "changed=false" \
+      "next_command=zcr legacy-cleanup --dry-run"
+    return
+  fi
+  if [ -e "$GLOBAL_OVERRIDE" ] && { [ ! -f "$GLOBAL_OVERRIDE" ] || [ -s "$GLOBAL_OVERRIDE" ]; }; then
+    printf '%s\n' "code=OK_STATUS" "action=status" "state=shadowed" \
+      "impact=managed-routing-not-effective" "retry_safe=true" "changed=false" \
+      "next_command=zcr disable"
+    return
+  fi
+  doctor_command status
 }
 
 recover_command() {
@@ -1103,49 +1210,112 @@ prepare_uninstall_agents() {
   dd if="$AGENTS_FILE" bs=1 skip="$prefix" 2>/dev/null >>"$prepared"
 }
 
-uninstall_command() {
+purge_profile_if_requested() {
+  purge=$1
+  PROFILE_PURGE_STATE=preserved
+  PROFILE_PURGE_BACKUP=absent
+  if [ "$purge" -ne 1 ]; then
+    return 0
+  fi
+  if [ ! -e "$PROFILE_FILE" ]; then
+    PROFILE_PURGE_STATE=absent
+    return
+  fi
+  [ -f "$PROFILE_FILE" ] && [ ! -L "$PROFILE_FILE" ] ||
+    fail E_PROFILE_OVERRIDE_INVALID "user override must be a regular file before it can be purged"
+  profile_before_hash=$(sha256_file "$PROFILE_FILE")
+  acquire_lock
+  [ "$(sha256_file "$PROFILE_FILE")" = "$profile_before_hash" ] ||
+    fail E_PROFILE_OVERRIDE_DRIFT "override changed before purge commit"
+  mkdir -p "$PROFILE_BACKUPS"
+  backup=$PROFILE_BACKUPS/backup-$(timestamp)-$$.toml
+  cp "$PROFILE_FILE" "$backup"
+  write_value "$backup.sha256" "$(sha256_file "$backup")"
+  [ "$(sha256_file "$backup")" = "$profile_before_hash" ] ||
+    fail E_PROFILE_OVERRIDE_DRIFT "profile backup changed during purge"
+  rm -f "$PROFILE_FILE"
+  release_lock
+  PROFILE_PURGE_STATE=purged
+  PROFILE_PURGE_BACKUP=$backup
+}
+
+remove_managed_state() {
+  action=$1
+  remove_root=$2
+  purge_profile=$3
   ensure_no_transaction
   if legacy_present && ! is_new_install; then
     fail E_LEGACY_INSTALL_DETECTED "use legacy-cleanup for the old Rust installation"
   fi
-  if ! is_new_install; then
-    printf '%s\n' "code=OK_NOT_ENABLED" "action=uninstall" "changed=false"
-    return
+  changed=false
+  backup=absent
+  if is_new_install; then
+    validate_managed_block
+    validate_active_payload
+    # A corrupted profile must never prevent a user from disabling routing.
+    prepared=$WORK_DIR/AGENTS.$action
+    prepare_uninstall_agents "$prepared"
+    existed=$(read_value "$CURRENT_DIR/agents_existed_before")
+    prepared_from_agents_hash=$(hash_optional "$AGENTS_FILE")
+    prepared_from_current_hash=$(state_tree_hash_optional)
+    acquire_lock
+    [ "$(hash_optional "$AGENTS_FILE")" = "$prepared_from_agents_hash" ] &&
+      [ "$(state_tree_hash_optional)" = "$prepared_from_current_hash" ] ||
+      fail E_COMMIT_DRIFT "AGENTS.md or current state changed between preflight and commit"
+    backup=$(backup_state)
+    agents_before=$(hash_optional "$AGENTS_FILE")
+    if [ "$existed" = 0 ] && [ ! -s "$prepared" ]; then
+      agents_after=absent
+    else
+      agents_after=$(sha256_file "$prepared")
+    fi
+    current_before=$(state_tree_hash_optional)
+    begin_transaction "$action" "$backup" "$agents_before" "$agents_after" \
+      "$current_before" absent 0 "-"
+    if [ "$agents_after" = absent ]; then
+      rm -f "$AGENTS_FILE"
+    else
+      atomic_from "$prepared" "$AGENTS_FILE"
+    fi
+    rm -rf -- "$CURRENT_DIR"
+    rm -rf -- "$TRANSACTION_DIR"
+    release_lock
+    changed=true
   fi
-  validate_managed_block
-  validate_active_payload
-  validate_effective_profile
-  prepared=$WORK_DIR/AGENTS.uninstall
-  prepare_uninstall_agents "$prepared"
-  existed=$(read_value "$CURRENT_DIR/agents_existed_before")
-  prepared_from_agents_hash=$(hash_optional "$AGENTS_FILE")
-  prepared_from_current_hash=$(state_tree_hash_optional)
-  acquire_lock
-  [ "$(hash_optional "$AGENTS_FILE")" = "$prepared_from_agents_hash" ] &&
-    [ "$(state_tree_hash_optional)" = "$prepared_from_current_hash" ] ||
-    fail E_COMMIT_DRIFT "AGENTS.md or current state changed between preflight and commit"
-  backup=$(backup_state)
-  agents_before=$(hash_optional "$AGENTS_FILE")
-  if [ "$existed" = 0 ] && [ ! -s "$prepared" ]; then
-    agents_after=absent
+  if [ "$remove_root" -eq 1 ] && [ -d "$ROUTER_ROOT" ]; then
+    # Entry points and plugin cache live outside this directory, so uninstall
+    # can stay discoverable while removing all managed Router payload state.
+    rm -rf -- "$ROUTER_ROOT"
+  fi
+  purge_profile_if_requested "$purge_profile"
+  if [ "$action" = disable ]; then
+    result_code=OK_DISABLED
+    result_impact=global-routing-disabled
+    next_command='zcr status'
   else
-    agents_after=$(sha256_file "$prepared")
+    result_code=OK_UNINSTALLED
+    result_impact=managed-payload-removed
+    next_command='zcr enable'
   fi
-  current_before=$(state_tree_hash_optional)
-  begin_transaction uninstall "$backup" "$agents_before" "$agents_after" \
-    "$current_before" absent 0 "-"
-  if [ "$agents_after" = absent ]; then
-    rm -f "$AGENTS_FILE"
-  else
-    atomic_from "$prepared" "$AGENTS_FILE"
+  printf '%s\n' "code=$result_code" "action=$action" "state=disabled" \
+    "impact=$result_impact" "retry_safe=true" "changed=$changed" "backup=$backup" \
+    "profile_preserved=$([ "$PROFILE_PURGE_STATE" = preserved ] && printf true || printf false)" \
+    "profile_purge_state=$PROFILE_PURGE_STATE" "profile_backup=$PROFILE_PURGE_BACKUP" \
+    "next_command=$next_command"
+}
+
+disable_command() {
+  remove_managed_state disable 0 0
+}
+
+uninstall_command() {
+  purge=0
+  [ "$#" -le 1 ] || fail E_USAGE "uninstall accepts only --purge-profile"
+  if [ "$#" -eq 1 ]; then
+    [ "$1" = --purge-profile ] || fail E_USAGE "uninstall accepts only --purge-profile"
+    purge=1
   fi
-  rm -rf -- "$CURRENT_DIR"
-  rm -rf -- "$TRANSACTION_DIR"
-  release_lock
-  rm -rf -- "$ROUTER_ROOT"
-  printf '%s\n' "code=OK_NOT_ENABLED" "action=uninstall" "changed=true" \
-    "profile_preserved=$([ -f "$PROFILE_FILE" ] && printf true || printf false)" \
-    "next_step=start-a-new-task"
+  remove_managed_state uninstall 1 "$purge"
 }
 
 legacy_offsets() {
@@ -1292,9 +1462,13 @@ profile_command() {
   case "$operation" in
     show|validate)
       validate_effective_profile
+      b2=$(awk -F'|' '$1 == "B2" { print $2 " " $3; exit }' "$WORK_DIR/profile-normalized")
+      set -- $b2
       printf '%s\n' "code=OK_PROFILE" "action=profile-$operation" \
         "profile_source=$EFFECTIVE_PROFILE_SOURCE" "profile_path=$EFFECTIVE_PROFILE_PATH" \
-        "profile_hash=$EFFECTIVE_PROFILE_HASH" "changed=false"
+        "profile_hash=$EFFECTIVE_PROFILE_HASH" "state=profile-ready" \
+        "impact=profile-effective" "retry_safe=true" "changed=false" \
+        "next_command=zcr profile set B2 $1 $2"
       cat "$WORK_DIR/profile-normalized"
       ;;
     init)
@@ -1311,13 +1485,17 @@ profile_command() {
       profile_normalize "$PROFILE_FILE" override "$WORK_DIR/profile-created"
       printf '%s\n' "code=OK_PROFILE_INITIALIZED" "action=profile-init" \
         "profile_path=$PROFILE_FILE" "profile_hash=$(sha256_file "$WORK_DIR/profile-created")" \
-        "changed=true"
+        "state=profile-customized" "impact=profile-override-created" "retry_safe=true" \
+        "changed=true" "next_command=zcr profile show"
       ;;
     set)
       [ "$#" -eq 3 ] || fail E_USAGE "profile set needs TIER MODEL EFFORT"
       tier=$1
       model=$2
       effort=$3
+      requested_tier=$tier
+      requested_model=$model
+      requested_effort=$effort
       case "$tier" in A0|A1|B0|B1|B2|C1|C2|C3) ;; *) fail E_PROFILE_OVERRIDE_INVALID "unknown tier" ;; esac
       if [ "$tier" = A0 ]; then
         [ "$model" = current-qualified-root ] && [ "$effort" = runtime-qualified ] ||
@@ -1342,9 +1520,12 @@ profile_command() {
         fail E_PROFILE_OVERRIDE_DRIFT "override changed before profile set commit"
       atomic_from "$canonical" "$PROFILE_FILE"
       release_lock
-      printf '%s\n' "code=OK_PROFILE_SET" "action=profile-set" "tier=$tier" \
+      printf '%s\n' "code=OK_PROFILE_SET" "action=profile-set" "tier=$requested_tier" \
+        "model=$requested_model" "effort=$requested_effort" \
         "profile_path=$PROFILE_FILE" \
-        "profile_hash=$(sha256_file "$WORK_DIR/profile-updated-checked")" "changed=true"
+        "profile_hash=$(sha256_file "$WORK_DIR/profile-updated-checked")" \
+        "state=profile-customized" "impact=profile-override-updated" "retry_safe=true" \
+        "changed=true" "next_command=zcr profile show"
       ;;
     reset)
       [ -f "$PROFILE_FILE" ] && [ ! -L "$PROFILE_FILE" ] ||
@@ -1363,7 +1544,8 @@ profile_command() {
       rm "$PROFILE_FILE"
       release_lock
       printf '%s\n' "code=OK_PROFILE_RESET" "action=profile-reset" "backup=$backup" \
-        "changed=true"
+        "state=profile-defaulted" "impact=profile-override-backed-up" "retry_safe=true" \
+        "changed=true" "next_command=zcr profile restore $backup"
       ;;
     restore)
       [ "$#" -eq 1 ] || fail E_USAGE "profile restore needs BACKUP"
@@ -1392,7 +1574,35 @@ profile_command() {
       release_lock
       printf '%s\n' "code=OK_PROFILE_RESTORED" "action=profile-restore" \
         "profile_path=$PROFILE_FILE" \
-        "profile_hash=$(sha256_file "$WORK_DIR/profile-restore-checked")" "changed=true"
+        "profile_hash=$(sha256_file "$WORK_DIR/profile-restore-checked")" \
+        "state=profile-customized" "impact=profile-backup-restored" "retry_safe=true" \
+        "changed=true" "next_command=zcr status"
+      ;;
+    backups)
+      [ "$#" -eq 0 ] || fail E_USAGE "profile backups takes no arguments"
+      if [ ! -d "$PROFILE_BACKUPS" ]; then
+        printf '%s\n' "code=OK_PROFILE_BACKUPS" "action=profile-backups" \
+          "state=profile-ready" "impact=no-profile-backups" "retry_safe=true" \
+          "backup_count=0" "changed=false" "next_command=zcr profile init"
+        return
+      fi
+      find "$PROFILE_BACKUPS" -mindepth 1 -maxdepth 1 -type f -name 'backup-*.toml' -print |
+        LC_ALL=C sort >"$WORK_DIR/profile-backups"
+      backup_count=$(wc -l <"$WORK_DIR/profile-backups" | tr -d ' ')
+      if [ "$backup_count" -eq 0 ]; then
+        printf '%s\n' "code=OK_PROFILE_BACKUPS" "action=profile-backups" \
+          "state=profile-ready" "impact=no-profile-backups" "retry_safe=true" \
+          "backup_count=0" "changed=false" "next_command=zcr profile init"
+      else
+        first_backup=$(sed -n '1p' "$WORK_DIR/profile-backups")
+        printf '%s\n' "code=OK_PROFILE_BACKUPS" "action=profile-backups" \
+          "state=profile-ready" "impact=managed-profile-backups-available" "retry_safe=true" \
+          "backup_count=$backup_count" "changed=false" \
+          "next_command=zcr profile restore $first_backup"
+        while IFS= read -r profile_backup; do
+          printf '%s\n' "backup=$profile_backup"
+        done <"$WORK_DIR/profile-backups"
+      fi
       ;;
     *) fail E_USAGE "unknown profile command: $operation" ;;
   esac
@@ -1462,6 +1672,27 @@ case "$COMMAND" in
     [ "$#" -eq 0 ] || fail E_USAGE "install takes no arguments"
     install_or_upgrade install 0
     ;;
+  enable)
+    [ "$#" -eq 0 ] || fail E_USAGE "enable takes no arguments"
+    install_or_upgrade enable 0
+    ;;
+  disable)
+    [ "$#" -eq 0 ] || fail E_USAGE "disable takes no arguments"
+    disable_command
+    ;;
+  status)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cwd)
+          [ "$#" -ge 2 ] || fail E_USAGE "--cwd needs a path"
+          DOCTOR_CWD=$2
+          shift 2
+          ;;
+        *) fail E_USAGE "unknown status option: $1" ;;
+      esac
+    done
+    status_command
+    ;;
   doctor)
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -1493,8 +1724,7 @@ case "$COMMAND" in
     rollback_command
     ;;
   uninstall)
-    [ "$#" -eq 0 ] || fail E_USAGE "uninstall takes no arguments"
-    uninstall_command
+    uninstall_command "$@"
     ;;
   legacy-cleanup)
     dry=0

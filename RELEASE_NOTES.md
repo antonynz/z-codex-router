@@ -1,3 +1,32 @@
+# Z Codex Router v1.1.0
+
+## Usability & Windows Reliability
+
+- Stable user entry points are installed as `zcr`, `zcr.ps1`, and `zcr.cmd`.
+  They resolve an installer-managed source pointer, so they work independently
+  of the current working directory.
+- Lifecycle operations are explicit: `install`, `upgrade`, `enable`, `disable`,
+  `status`, and `uninstall`. `disable` retains plugin/profile; `uninstall`
+  retains the profile unless `--purge-profile` is explicitly supplied.
+- `status` is non-mutating and reports actionable recovery, shadowing, legacy,
+  disabled, and enabled states. Controlled failures emit one stable `E_*` code
+  plus `state`, `impact`, `retry_safe`, and exactly one `next_command`.
+- Profile customization is command-first: `profile set`, `show`, `backups`,
+  `reset`, and `restore` all expose next steps and checksum-backed backups.
+- The POSIX and Windows installers now install stable entry points and support
+  `--release-dir` / `-ReleaseDirectory` for archive + SHA256SUMS verification
+  from an offline or mirrored release.
+- README is now Chinese-first with a separate English README. Executable
+  docs/bootstrap/user-command tests run in CI and release gates on POSIX,
+  Windows PowerShell 5.1, and PowerShell 7.
+- Release packaging derives its version from the release manifest and verifies
+  manifest, installer, controller, asset-name, and checksum alignment.
+
+No A0–C3 classification, stable mapping, schema, downgrade, telemetry,
+multi-root handoff, no-Luna default, or authorization boundary changed.
+
+---
+
 # Z Codex Router v1.0.1
 
 Profile routing 优化：

@@ -113,9 +113,46 @@ try {
     $result = Invoke-Router $caseHome @("doctor", "--cwd", $caseHome)
     Assert-Contains $result.Output "managed_block_start=0"
     $result = Invoke-Router $caseHome @("uninstall")
-    Assert-Contains $result.Output "code=OK_NOT_ENABLED"
+    Assert-Contains $result.Output "code=OK_UNINSTALLED"
     $result = Invoke-Router $caseHome @("uninstall")
     Assert-Contains $result.Output "changed=false"
+
+    # Explicit lifecycle names provide status, disable, re-enable and profile
+    # preservation without manual TOML editing.
+    $caseHome = [IO.Path]::Combine($TestRoot, "lifecycle")
+    [void][IO.Directory]::CreateDirectory($caseHome)
+    $result = Invoke-Router $caseHome @("profile", "set", "B2", "gpt-5.6-terra", "high")
+    Assert-Contains $result.Output "tier=B2"
+    $profile = [IO.Path]::Combine($caseHome, "z-codex-router-profile.toml")
+    $profileBytes = [IO.File]::ReadAllBytes($profile)
+    $result = Invoke-Router $caseHome @("enable")
+    Assert-Contains $result.Output "code=OK_ENABLED"
+    $result = Invoke-Router $caseHome @("status")
+    Assert-Contains $result.Output "code=OK_STATUS"
+    Assert-Contains $result.Output "state=enabled"
+    $result = Invoke-Router $caseHome @("disable")
+    Assert-Contains $result.Output "code=OK_DISABLED"
+    Assert-Contains $result.Output "next_command=zcr status"
+    Assert-BytesEqual $profileBytes ([IO.File]::ReadAllBytes($profile))
+    [void](Invoke-Router $caseHome @("enable"))
+    $result = Invoke-Router $caseHome @("uninstall")
+    Assert-Contains $result.Output "profile_preserved=true"
+    Assert-BytesEqual $profileBytes ([IO.File]::ReadAllBytes($profile))
+    $result = Invoke-Router $caseHome @("uninstall", "--purge-profile")
+    Assert-Contains $result.Output "profile_purge_state=purged"
+    if (Test-Path -LiteralPath $profile) { Fail-Test "purge profile left an override" }
+    Pass-Test
+    $purgeBackup = ([Regex]::Match($result.Output, '(?m)^profile_backup=(.+)$')).Groups[1].Value.Trim()
+    if (-not [IO.File]::Exists($purgeBackup) -or -not [IO.File]::Exists("$purgeBackup.sha256")) {
+        Fail-Test "purge profile backup is missing"
+    }
+    Pass-Test
+    $result = Invoke-Router $caseHome @("profile", "set", "BAD", "gpt-5.6-terra", "high") 1
+    Assert-Contains $result.Error "code=E_PROFILE_OVERRIDE_INVALID"
+    Assert-Contains $result.Error "state=profile-needs-attention"
+    Assert-Contains $result.Error "impact=profile-not-modified"
+    Assert-Contains $result.Error "retry_safe=true"
+    Assert-Contains $result.Error "next_command=zcr profile show"
 
     # BOM, CRLF, UTF-8 and later user edits survive.
     $caseHome = [IO.Path]::Combine($TestRoot, "bytes")
@@ -197,6 +234,9 @@ try {
     $result = Invoke-Router $caseHome @("profile", "reset")
     Assert-Contains $result.Output "code=OK_PROFILE_RESET"
     $backup = ([Regex]::Match($result.Output, '(?m)^backup=(.+)$')).Groups[1].Value.Trim()
+    $result = Invoke-Router $caseHome @("profile", "backups")
+    Assert-Contains $result.Output "code=OK_PROFILE_BACKUPS"
+    Assert-Contains $result.Output "next_command=zcr profile restore $backup"
     [void](Invoke-Router $caseHome @("profile", "restore", $backup))
     Assert-BytesEqual $profileBytes ([IO.File]::ReadAllBytes($profile))
     [void](Invoke-Router $caseHome @("install"))
@@ -230,7 +270,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "1"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.1.0"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4242"
     [IO.Directory]::Move($current, [IO.Path]::Combine($routerRoot, ".current-previous-4242"))
     $result = Invoke-Router $caseHome @("recover")
@@ -255,7 +295,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "0"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.1.0"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4343"
     [IO.File]::AppendAllText([IO.Path]::Combine($caseHome, "AGENTS.md"), "user drift`n", $Utf8NoBom)
     $driftBytes = [IO.File]::ReadAllBytes([IO.Path]::Combine($caseHome, "AGENTS.md"))
@@ -286,7 +326,7 @@ try {
     Write-TestValue ([IO.Path]::Combine($transaction, "current_intermediate_sha256")) "absent"
     Write-TestValue ([IO.Path]::Combine($transaction, "current_after_sha256")) (Get-TestTreeHash $current)
     Write-TestValue ([IO.Path]::Combine($transaction, "remove_version")) "0"
-    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.0.1"
+    Write-TestValue ([IO.Path]::Combine($transaction, "version")) "1.1.0"
     Write-TestValue ([IO.Path]::Combine($transaction, "operation_id")) "4444"
     [IO.File]::AppendAllText([IO.Path]::Combine($backup, "AGENTS.md"), "tampered backup`n", $Utf8NoBom)
     $liveBytes = [IO.File]::ReadAllBytes($agents)
@@ -365,17 +405,21 @@ try {
     [void][IO.Directory]::CreateDirectory($caseHome)
     [void][IO.Directory]::CreateDirectory($sourceParent)
     Copy-Item -LiteralPath ([IO.Path]::Combine($Root, "plugins", "z-codex-router")) -Destination $sourceParent -Recurse
+    [void](Invoke-Router $caseHome @("profile", "set", "B2", "gpt-5.6-terra", "high"))
+    $cacheProfile = [IO.Path]::Combine($caseHome, "z-codex-router-profile.toml")
+    $cacheProfileBytes = [IO.File]::ReadAllBytes($cacheProfile)
     [void](Invoke-Router $caseHome @("install"))
     $sourcePlugin = [IO.Path]::Combine($sourceParent, "z-codex-router")
     $manifest = [IO.Path]::Combine($sourcePlugin, ".codex-plugin", "plugin.json")
     $manifestText = [IO.File]::ReadAllText($manifest, $Utf8NoBom)
-    $manifestText = $manifestText.Replace('"version": "1.0.1"', '"version": "1.0.1+codex.test-build"')
+    $manifestText = $manifestText.Replace('"version": "1.1.0"', '"version": "1.1.0+codex.test-build"')
     [IO.File]::WriteAllText($manifest, $manifestText, $Utf8NoBom)
     $sourceRouter = [IO.Path]::Combine($sourcePlugin, "scripts", "routerctl.ps1")
     $result = Invoke-Script $sourceRouter @("--source", $sourcePlugin, "--codex-home", $caseHome, "upgrade")
-    Assert-Contains $result.Output "version=1.0.1+codex.test-build"
+    Assert-Contains $result.Output "version=1.1.0+codex.test-build"
+    Assert-BytesEqual $cacheProfileBytes ([IO.File]::ReadAllBytes($cacheProfile))
     $result = Invoke-Router $caseHome @("doctor")
-    Assert-Contains $result.Output "version=1.0.1+codex.test-build"
+    Assert-Contains $result.Output "version=1.1.0+codex.test-build"
 
     Write-Output "PASS test_routerctl.ps1 ($Passed assertions)"
 }

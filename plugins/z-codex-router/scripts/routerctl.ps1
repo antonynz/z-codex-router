@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 $script:Format = "script-v1"
-$script:PublicVersion = "1.0.1"
+$script:PublicVersion = "1.1.0"
 $script:BeginMarker = "<!-- z-codex-router:begin"
 $script:EndMarker = "<!-- z-codex-router:end id=z-codex-router -->"
 $script:DefaultBudget = 32768
@@ -21,21 +21,45 @@ Z Codex Router pure-script control plane
 Usage:
   routerctl.ps1 [--source PATH] [--codex-home PATH] dry-run
   routerctl.ps1 [--source PATH] [--codex-home PATH] install
+  routerctl.ps1 [--source PATH] [--codex-home PATH] enable
+  routerctl.ps1 [--source PATH] [--codex-home PATH] disable
+  routerctl.ps1 [--source PATH] [--codex-home PATH] status [--cwd PATH]
   routerctl.ps1 [--source PATH] [--codex-home PATH] doctor [--cwd PATH]
   routerctl.ps1 [--source PATH] [--codex-home PATH] upgrade [--dry-run]
   routerctl.ps1 [--source PATH] [--codex-home PATH] recover
   routerctl.ps1 [--source PATH] [--codex-home PATH] rollback
-  routerctl.ps1 [--source PATH] [--codex-home PATH] uninstall
+  routerctl.ps1 [--source PATH] [--codex-home PATH] uninstall [--purge-profile]
   routerctl.ps1 [--source PATH] [--codex-home PATH] legacy-cleanup [--dry-run]
-  routerctl.ps1 [--source PATH] [--codex-home PATH] profile show|init|validate|reset
+  routerctl.ps1 [--source PATH] [--codex-home PATH] profile show|init|validate|reset|backups
   routerctl.ps1 [--source PATH] [--codex-home PATH] profile set TIER MODEL EFFORT
   routerctl.ps1 [--source PATH] [--codex-home PATH] profile restore BACKUP
 "@
 }
 
+function Get-FailureGuidance {
+    param([string]$Code)
+    switch -Wildcard ($Code) {
+        "E_TRANSACTION_PENDING" { return @("state=recovery-required", "impact=lifecycle-state-may-be-incomplete", "retry_safe=false", "next_command=zcr recover") }
+        "E_TRANSACTION_DRIFT" { return @("state=recovery-required", "impact=lifecycle-state-may-be-incomplete", "retry_safe=false", "next_command=zcr recover") }
+        "E_TRANSACTION_INVALID" { return @("state=recovery-required", "impact=lifecycle-state-may-be-incomplete", "retry_safe=false", "next_command=zcr recover") }
+        "E_LOCKED" { return @("state=operation-in-progress", "impact=no-write-by-this-command", "retry_safe=true", "next_command=zcr status") }
+        "E_GLOBAL_OVERRIDE_ACTIVE" { return @("state=shadowed", "impact=global-routing-not-modified", "retry_safe=true", "next_command=zcr status") }
+        "E_MANAGED_BLOCK_DRIFT" { return @("state=review-required", "impact=protected-user-state-preserved", "retry_safe=true", "next_command=zcr status") }
+        "E_PAYLOAD_INVALID" { return @("state=review-required", "impact=protected-user-state-preserved", "retry_safe=true", "next_command=zcr status") }
+        "E_COMMIT_DRIFT" { return @("state=review-required", "impact=protected-user-state-preserved", "retry_safe=true", "next_command=zcr status") }
+        "E_ROLLBACK_DRIFT" { return @("state=review-required", "impact=protected-user-state-preserved", "retry_safe=true", "next_command=zcr status") }
+        "E_PROFILE_*" { return @("state=profile-needs-attention", "impact=profile-not-modified", "retry_safe=true", "next_command=zcr profile show") }
+        "E_LEGACY_*" { return @("state=legacy-cleanup-required", "impact=global-routing-not-modified", "retry_safe=false", "next_command=zcr legacy-cleanup --dry-run") }
+        "E_NOT_INSTALLED" { return @("state=not-enabled", "impact=global-routing-inactive", "retry_safe=true", "next_command=zcr enable") }
+        "E_UPGRADE_REQUIRED" { return @("state=not-enabled", "impact=global-routing-inactive", "retry_safe=true", "next_command=zcr enable") }
+        default { return @("state=failed", "impact=operation-not-completed", "retry_safe=true", "next_command=zcr status") }
+    }
+}
+
 function Fail-Zcr {
     param([string]$Code, [string]$Message)
-    throw (New-Object System.InvalidOperationException("$Code`: $Message"))
+    $detail = @("$Code`: $Message", "code=$Code") + (Get-FailureGuidance $Code)
+    throw ($detail -join "`n")
 }
 
 function Write-Lines {
@@ -284,7 +308,7 @@ function Read-ManifestVersion {
 function Copy-Payload {
     param([string]$Destination)
     [void][IO.Directory]::CreateDirectory($Destination)
-    foreach ($name in @("agents", "core", "profiles", "release", "compatibility.json")) {
+    foreach ($name in @("agents", "core", "profiles", "release", "scripts", "compatibility.json")) {
         $source = [IO.Path]::Combine($script:SourceRoot, $name)
         if (-not (Test-Path -LiteralPath $source)) {
             Fail-Zcr "E_SOURCE_INVALID" "required payload entry is missing: $name"
@@ -486,6 +510,8 @@ function Validate-Source {
         "profiles/candidate/current-gpt-5.6-no-luna-compatibility-candidate.toml",
         "profiles/schema.json",
         "release/manifest.json",
+        "scripts/routerctl.sh",
+        "scripts/routerctl.ps1",
         "compatibility.json"
     )) {
         $path = [IO.Path]::Combine($script:SourceRoot, $relative.Replace([char]'/', [IO.Path]::DirectorySeparatorChar))
@@ -588,7 +614,10 @@ function Test-LegacyPresent {
     }
     if ((Get-MarkerCount $script:AgentsFile) -gt 0 -and -not (Test-NewInstall)) { return $true }
     if ([IO.Directory]::Exists($script:RouterRoot) -and -not (Test-NewInstall)) {
-        if ((Get-ChildItem -LiteralPath $script:RouterRoot -Force | Select-Object -First 1) -ne $null) {
+        $unknown = Get-ChildItem -LiteralPath $script:RouterRoot -Force |
+            Where-Object { $_.Name -ne "versions" -and $_.Name -ne "backups" } |
+            Select-Object -First 1
+        if ($unknown -ne $null) {
             return $true
         }
     }
@@ -899,13 +928,18 @@ function Invoke-InstallOrUpgrade {
         $currentVersion = Read-Value ([IO.Path]::Combine($script:CurrentDir, "version"))
         $currentHash = Read-Value ([IO.Path]::Combine($script:CurrentDir, "payload_sha256"))
         if ($currentVersion -eq $script:SourceVersion -and $currentHash -eq $script:SourcePayloadHash) {
+            $resultCode = if ($Action -eq "enable") { "OK_ENABLED" } else { "OK_NO_CHANGE" }
             Write-Lines @(
-                "code=OK_NO_CHANGE",
+                "code=$resultCode",
                 "action=$Action",
+                "state=enabled",
+                "impact=global-routing-active",
+                "retry_safe=true",
                 "version=$currentVersion",
                 "changed=false",
                 "profile_source=$($script:EffectiveProfileSource)",
-                "profile_hash=$($script:EffectiveProfileHash)"
+                "profile_hash=$($script:EffectiveProfileHash)",
+                "next_command=zcr status"
             )
             return
         }
@@ -928,13 +962,16 @@ function Invoke-InstallOrUpgrade {
         Write-Lines @(
             "code=OK_DRY_RUN",
             "action=$Action",
+            "state=planned",
+            "impact=global-routing-unchanged",
+            "retry_safe=true",
             "version=$($script:SourceVersion)",
             "payload_sha256=$($script:SourcePayloadHash)",
             "agents_prefix_bytes=$($script:PrefixBytes)",
             "profile_source=$($script:EffectiveProfileSource)",
             "profile_hash=$($script:EffectiveProfileHash)",
             "changed=true",
-            "next_step=start-a-new-task-after-write"
+            "next_command=zcr enable"
         )
         return
     }
@@ -988,13 +1025,16 @@ function Invoke-InstallOrUpgrade {
     Write-Lines @(
         "code=OK_ENABLED",
         "action=$Action",
+        "state=enabled",
+        "impact=global-routing-active",
+        "retry_safe=true",
         "version=$($script:SourceVersion)",
         "payload_sha256=$($script:SourcePayloadHash)",
         "backup=$backup",
         "changed=true",
         "profile_source=$($script:EffectiveProfileSource)",
         "profile_hash=$($script:EffectiveProfileHash)",
-        "next_step=start-a-new-task"
+        "next_command=zcr status"
     )
 }
 
@@ -1030,6 +1070,7 @@ function Get-DirectoryChain {
 }
 
 function Invoke-Doctor {
+    param([string]$RequestedAction = "doctor")
     Assert-NoTransaction
     if (Test-LegacyPresent) {
         Fail-Zcr "E_LEGACY_INSTALL_DETECTED" "legacy state requires explicit legacy-cleanup before a fresh script install"
@@ -1039,7 +1080,24 @@ function Invoke-Doctor {
         if ([IO.File]::Exists($script:GlobalOverride) -and (Get-Item -LiteralPath $script:GlobalOverride).Length -gt 0) {
             $overrideState = "active"
         }
-        Write-Lines @("code=OK_NOT_ENABLED", "changed=false", "global_override=$overrideState")
+        if ($RequestedAction -eq "status") {
+            $resultCode = "OK_STATUS"
+            $resultAction = "status"
+        }
+        else {
+            $resultCode = "OK_NOT_ENABLED"
+            $resultAction = "doctor"
+        }
+        Write-Lines @(
+            "code=$resultCode",
+            "action=$resultAction",
+            "state=disabled",
+            "impact=global-routing-inactive",
+            "retry_safe=true",
+            "changed=false",
+            "global_override=$overrideState",
+            "next_command=zcr enable"
+        )
         return
     }
     Assert-NoGlobalOverride
@@ -1080,8 +1138,22 @@ function Invoke-Doctor {
     if ($blockEnd -gt $budget) {
         Fail-Zcr "E_MANAGED_BLOCK_OUTSIDE_INSTRUCTION_BUDGET" "managed block ends at byte $blockEnd, beyond effective budget $budget"
     }
+    if ($RequestedAction -eq "status") {
+        $resultCode = "OK_STATUS"
+        $resultAction = "status"
+        $nextCommand = "zcr doctor"
+    }
+    else {
+        $resultCode = "OK_ENABLED"
+        $resultAction = "doctor"
+        $nextCommand = "zcr status"
+    }
     Write-Lines @(
-        "code=OK_ENABLED",
+        "code=$resultCode",
+        "action=$resultAction",
+        "state=enabled",
+        "impact=global-routing-active",
+        "retry_safe=true",
         "version=$(Read-Value ([IO.Path]::Combine($script:CurrentDir, "version")))",
         "payload_sha256=$(Read-Value ([IO.Path]::Combine($script:CurrentDir, "payload_sha256")))",
         "instruction_source=$($script:AgentsFile)",
@@ -1093,8 +1165,26 @@ function Invoke-Doctor {
         "profile_source=$($script:EffectiveProfileSource)",
         "profile_path=$($script:EffectiveProfilePath)",
         "profile_hash=$($script:EffectiveProfileHash)",
-        "changed=false"
+        "changed=false",
+        "next_command=$nextCommand"
     )
+}
+
+function Invoke-Status {
+    if ([IO.Directory]::Exists($script:TransactionDir)) {
+        Write-Lines @("code=OK_STATUS", "action=status", "state=recovery-required", "impact=lifecycle-state-may-be-incomplete", "retry_safe=false", "changed=false", "next_command=zcr recover")
+        return
+    }
+    if (Test-LegacyPresent) {
+        Write-Lines @("code=OK_STATUS", "action=status", "state=legacy-cleanup-required", "impact=global-routing-not-modified", "retry_safe=false", "changed=false", "next_command=zcr legacy-cleanup --dry-run")
+        return
+    }
+    if (([IO.File]::Exists($script:GlobalOverride) -and (Get-Item -LiteralPath $script:GlobalOverride).Length -gt 0) -or
+        [IO.Directory]::Exists($script:GlobalOverride)) {
+        Write-Lines @("code=OK_STATUS", "action=status", "state=shadowed", "impact=managed-routing-not-effective", "retry_safe=true", "changed=false", "next_command=zcr disable")
+        return
+    }
+    Invoke-Doctor "status"
 }
 
 function Invoke-Recover {
@@ -1191,45 +1281,113 @@ function Get-UninstallAgents {
     return Join-ByteArrays @($bomPart, $remainder)
 }
 
-function Invoke-Uninstall {
+function Invoke-ProfilePurge {
+    param([bool]$Purge)
+    $script:ProfilePurgeState = "preserved"
+    $script:ProfilePurgeBackup = "absent"
+    if (-not $Purge) { return }
+    if (-not (Test-Path -LiteralPath $script:ProfileFile)) {
+        $script:ProfilePurgeState = "absent"
+        return
+    }
+    if (-not [IO.File]::Exists($script:ProfileFile) -or (Test-ReparsePoint $script:ProfileFile)) {
+        Fail-Zcr "E_PROFILE_OVERRIDE_INVALID" "user override must be a regular file before it can be purged"
+    }
+    $profileHash = Get-Sha256File $script:ProfileFile
+    Acquire-Lock
+    if ((Get-Sha256File $script:ProfileFile) -ne $profileHash) {
+        Fail-Zcr "E_PROFILE_OVERRIDE_DRIFT" "override changed before purge commit"
+    }
+    [void][IO.Directory]::CreateDirectory($script:ProfileBackups)
+    $backup = [IO.Path]::Combine($script:ProfileBackups, "backup-" + (Get-Timestamp) + "-" + $PID + ".toml")
+    [IO.File]::Copy($script:ProfileFile, $backup)
+    Write-Value "$backup.sha256" (Get-Sha256File $backup)
+    if ((Get-Sha256File $backup) -ne $profileHash) {
+        Fail-Zcr "E_PROFILE_OVERRIDE_DRIFT" "profile backup changed during purge"
+    }
+    [IO.File]::Delete($script:ProfileFile)
+    Release-Lock
+    $script:ProfilePurgeState = "purged"
+    $script:ProfilePurgeBackup = $backup
+}
+
+function Invoke-RemoveManagedState {
+    param([string]$Action, [bool]$RemoveRoot, [bool]$PurgeProfile)
     Assert-NoTransaction
     if ((Test-LegacyPresent) -and -not (Test-NewInstall)) {
         Fail-Zcr "E_LEGACY_INSTALL_DETECTED" "use legacy-cleanup for the old Rust installation"
     }
-    if (-not (Test-NewInstall)) {
-        Write-Lines @("code=OK_NOT_ENABLED", "action=uninstall", "changed=false")
-        return
+    $changed = $false
+    $backup = "absent"
+    if (Test-NewInstall) {
+        Validate-ManagedBlock
+        Validate-ActivePayload
+        # A malformed optional profile must not trap a user in an enabled state.
+        $prepared = Get-UninstallAgents
+        $existed = Read-Value ([IO.Path]::Combine($script:CurrentDir, "agents_existed_before"))
+        $preparedFromAgentsHash = Get-OptionalFileHash $script:AgentsFile
+        $preparedFromCurrentHash = Get-StateTreeHashOptional
+        Acquire-Lock
+        if ((Get-OptionalFileHash $script:AgentsFile) -ne $preparedFromAgentsHash -or
+            (Get-StateTreeHashOptional) -ne $preparedFromCurrentHash) {
+            Fail-Zcr "E_COMMIT_DRIFT" "AGENTS.md or current state changed between preflight and commit"
+        }
+        $backup = Backup-State
+        $agentsBefore = Get-OptionalFileHash $script:AgentsFile
+        if ($existed -eq "0" -and $prepared.Length -eq 0) { $agentsAfter = "absent" }
+        else { $agentsAfter = Get-Sha256Bytes $prepared }
+        $currentBefore = Get-StateTreeHashOptional
+        Begin-Transaction $Action $backup $agentsBefore $agentsAfter $currentBefore "absent" "0" "-"
+        if ($agentsAfter -eq "absent") {
+            [IO.File]::Delete($script:AgentsFile)
+        }
+        else {
+            Write-AtomicBytes $script:AgentsFile $prepared
+        }
+        [IO.Directory]::Delete($script:CurrentDir, $true)
+        [IO.Directory]::Delete($script:TransactionDir, $true)
+        Release-Lock
+        $changed = $true
     }
-    Validate-ManagedBlock
-    Validate-ActivePayload
-    Validate-EffectiveProfile
-    $prepared = Get-UninstallAgents
-    $existed = Read-Value ([IO.Path]::Combine($script:CurrentDir, "agents_existed_before"))
-    $preparedFromAgentsHash = Get-OptionalFileHash $script:AgentsFile
-    $preparedFromCurrentHash = Get-StateTreeHashOptional
-    Acquire-Lock
-    if ((Get-OptionalFileHash $script:AgentsFile) -ne $preparedFromAgentsHash -or
-        (Get-StateTreeHashOptional) -ne $preparedFromCurrentHash) {
-        Fail-Zcr "E_COMMIT_DRIFT" "AGENTS.md or current state changed between preflight and commit"
+    if ($RemoveRoot -and [IO.Directory]::Exists($script:RouterRoot)) {
+        # Stable entry points and the registered plugin cache are intentionally
+        # outside this directory, leaving a clear re-enable path after uninstall.
+        [IO.Directory]::Delete($script:RouterRoot, $true)
     }
-    $backup = Backup-State
-    $agentsBefore = Get-OptionalFileHash $script:AgentsFile
-    if ($existed -eq "0" -and $prepared.Length -eq 0) { $agentsAfter = "absent" }
-    else { $agentsAfter = Get-Sha256Bytes $prepared }
-    $currentBefore = Get-StateTreeHashOptional
-    Begin-Transaction "uninstall" $backup $agentsBefore $agentsAfter $currentBefore "absent" "0" "-"
-    if ($agentsAfter -eq "absent") {
-        [IO.File]::Delete($script:AgentsFile)
+    Invoke-ProfilePurge $PurgeProfile
+    if ($Action -eq "disable") {
+        $resultCode = "OK_DISABLED"
+        $impact = "global-routing-disabled"
+        $nextCommand = "zcr status"
     }
     else {
-        Write-AtomicBytes $script:AgentsFile $prepared
+        $resultCode = "OK_UNINSTALLED"
+        $impact = "managed-payload-removed"
+        $nextCommand = "zcr enable"
     }
-    [IO.Directory]::Delete($script:CurrentDir, $true)
-    [IO.Directory]::Delete($script:TransactionDir, $true)
-    Release-Lock
-    [IO.Directory]::Delete($script:RouterRoot, $true)
-    $profilePreserved = [IO.File]::Exists($script:ProfileFile).ToString().ToLowerInvariant()
-    Write-Lines @("code=OK_NOT_ENABLED", "action=uninstall", "changed=true", "profile_preserved=$profilePreserved", "next_step=start-a-new-task")
+    $profilePreserved = ($script:ProfilePurgeState -eq "preserved").ToString().ToLowerInvariant()
+    Write-Lines @(
+        "code=$resultCode",
+        "action=$Action",
+        "state=disabled",
+        "impact=$impact",
+        "retry_safe=true",
+        "changed=$($changed.ToString().ToLowerInvariant())",
+        "backup=$backup",
+        "profile_preserved=$profilePreserved",
+        "profile_purge_state=$($script:ProfilePurgeState)",
+        "profile_backup=$($script:ProfilePurgeBackup)",
+        "next_command=$nextCommand"
+    )
+}
+
+function Invoke-Disable {
+    Invoke-RemoveManagedState "disable" $false $false
+}
+
+function Invoke-Uninstall {
+    param([bool]$PurgeProfile = $false)
+    Invoke-RemoveManagedState "uninstall" $true $PurgeProfile
 }
 
 function Find-ByteSequence {
@@ -1345,13 +1503,18 @@ function Invoke-Profile {
     switch ($Operation) {
         { $_ -eq "show" -or $_ -eq "validate" } {
             Validate-EffectiveProfile
+            $b2 = $script:EffectiveProfileMapping | Where-Object { $_.Tier -eq "B2" } | Select-Object -First 1
             Write-Lines @(
                 "code=OK_PROFILE",
                 "action=profile-$Operation",
                 "profile_source=$($script:EffectiveProfileSource)",
                 "profile_path=$($script:EffectiveProfilePath)",
                 "profile_hash=$($script:EffectiveProfileHash)",
-                "changed=false"
+                "state=profile-ready",
+                "impact=profile-effective",
+                "retry_safe=true",
+                "changed=false",
+                "next_command=zcr profile set B2 $($b2.Model) $($b2.Effort)"
             )
             foreach ($entry in $script:EffectiveProfileMapping) {
                 [Console]::Out.WriteLine("$($entry.Tier)|$($entry.Model)|$($entry.Effort)")
@@ -1370,7 +1533,7 @@ function Invoke-Profile {
             Write-AtomicBytes $script:ProfileFile (Get-CanonicalProfileBytes $script:EffectiveProfileMapping)
             Release-Lock
             $checked = Normalize-Profile $script:ProfileFile "override"
-            Write-Lines @("code=OK_PROFILE_INITIALIZED", "action=profile-init", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "changed=true")
+            Write-Lines @("code=OK_PROFILE_INITIALIZED", "action=profile-init", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "state=profile-customized", "impact=profile-override-created", "retry_safe=true", "changed=true", "next_command=zcr profile show")
             break
         }
         "set" {
@@ -1409,7 +1572,7 @@ function Invoke-Profile {
             }
             Write-AtomicBytes $script:ProfileFile $canonical
             Release-Lock
-            Write-Lines @("code=OK_PROFILE_SET", "action=profile-set", "tier=$tier", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "changed=true")
+            Write-Lines @("code=OK_PROFILE_SET", "action=profile-set", "tier=$tier", "model=$model", "effort=$effort", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "state=profile-customized", "impact=profile-override-updated", "retry_safe=true", "changed=true", "next_command=zcr profile show")
             break
         }
         "reset" {
@@ -1431,7 +1594,7 @@ function Invoke-Profile {
             }
             [IO.File]::Delete($script:ProfileFile)
             Release-Lock
-            Write-Lines @("code=OK_PROFILE_RESET", "action=profile-reset", "backup=$backup", "changed=true")
+            Write-Lines @("code=OK_PROFILE_RESET", "action=profile-reset", "backup=$backup", "state=profile-defaulted", "impact=profile-override-backed-up", "retry_safe=true", "changed=true", "next_command=zcr profile restore $backup")
             break
         }
         "restore" {
@@ -1459,7 +1622,24 @@ function Invoke-Profile {
             }
             Copy-AtomicFile $requested $script:ProfileFile
             Release-Lock
-            Write-Lines @("code=OK_PROFILE_RESTORED", "action=profile-restore", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "changed=true")
+            Write-Lines @("code=OK_PROFILE_RESTORED", "action=profile-restore", "profile_path=$($script:ProfileFile)", "profile_hash=$(Get-Sha256Bytes (Get-NormalizedProfileBytes $checked))", "state=profile-customized", "impact=profile-backup-restored", "retry_safe=true", "changed=true", "next_command=zcr status")
+            break
+        }
+        "backups" {
+            if ($Arguments.Count -ne 0) { Fail-Zcr "E_USAGE" "profile backups takes no arguments" }
+            $backups = @()
+            if ([IO.Directory]::Exists($script:ProfileBackups)) {
+                $backups = @(Get-ChildItem -LiteralPath $script:ProfileBackups -Force -File |
+                    Where-Object { $_.Name -match '^backup-.*\.toml$' } |
+                    Sort-Object Name)
+            }
+            if ($backups.Count -eq 0) {
+                Write-Lines @("code=OK_PROFILE_BACKUPS", "action=profile-backups", "state=profile-ready", "impact=no-profile-backups", "retry_safe=true", "backup_count=0", "changed=false", "next_command=zcr profile init")
+            }
+            else {
+                Write-Lines @("code=OK_PROFILE_BACKUPS", "action=profile-backups", "state=profile-ready", "impact=managed-profile-backups-available", "retry_safe=true", "backup_count=$($backups.Count)", "changed=false", "next_command=zcr profile restore $($backups[0].FullName)")
+                foreach ($backup in $backups) { [Console]::Out.WriteLine("backup=$($backup.FullName)") }
+            }
             break
         }
         default { Fail-Zcr "E_USAGE" "unknown profile command: $Operation" }
@@ -1506,6 +1686,24 @@ function Invoke-Main {
             if ($arguments.Count -ne 0) { Fail-Zcr "E_USAGE" "install takes no arguments" }
             Invoke-InstallOrUpgrade "install" $false
         }
+        "enable" {
+            if ($arguments.Count -ne 0) { Fail-Zcr "E_USAGE" "enable takes no arguments" }
+            Invoke-InstallOrUpgrade "enable" $false
+        }
+        "disable" {
+            if ($arguments.Count -ne 0) { Fail-Zcr "E_USAGE" "disable takes no arguments" }
+            Invoke-Disable
+        }
+        "status" {
+            while ($arguments.Count -gt 0) {
+                if ($arguments[0] -ne "--cwd" -or $arguments.Count -lt 2) {
+                    Fail-Zcr "E_USAGE" "status accepts only --cwd PATH"
+                }
+                $script:DoctorCwd = $arguments[1]
+                $arguments.RemoveRange(0, 2)
+            }
+            Invoke-Status
+        }
         "doctor" {
             while ($arguments.Count -gt 0) {
                 if ($arguments[0] -ne "--cwd" -or $arguments.Count -lt 2) {
@@ -1535,8 +1733,14 @@ function Invoke-Main {
             Invoke-Rollback
         }
         "uninstall" {
-            if ($arguments.Count -ne 0) { Fail-Zcr "E_USAGE" "uninstall takes no arguments" }
-            Invoke-Uninstall
+            $purge = $false
+            if ($arguments.Count -gt 0) {
+                if ($arguments.Count -ne 1 -or $arguments[0] -ne "--purge-profile") {
+                    Fail-Zcr "E_USAGE" "uninstall accepts only --purge-profile"
+                }
+                $purge = $true
+            }
+            Invoke-Uninstall $purge
         }
         "legacy-cleanup" {
             $dry = $false

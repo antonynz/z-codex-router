@@ -99,9 +99,44 @@ run_router "$home" doctor --cwd "$home" >"$TEST_ROOT/basic-doctor"
 assert_contains "managed_block_start=0" "$TEST_ROOT/basic-doctor"
 assert_contains "code=OK_ENABLED" "$TEST_ROOT/basic-doctor"
 run_router "$home" uninstall >"$TEST_ROOT/basic-uninstall"
-assert_contains "code=OK_NOT_ENABLED" "$TEST_ROOT/basic-uninstall"
+assert_contains "code=OK_UNINSTALLED" "$TEST_ROOT/basic-uninstall"
 run_router "$home" uninstall >"$TEST_ROOT/basic-uninstall-repeat"
 assert_contains "changed=false" "$TEST_ROOT/basic-uninstall-repeat"
+
+# The lifecycle names are explicit, status is actionable, and a disabled Router
+# keeps the user's profile intact while allowing a no-TOML re-enable.
+home=$TEST_ROOT/lifecycle
+mkdir -p "$home"
+run_router "$home" profile set B2 gpt-5.6-terra high >"$TEST_ROOT/lifecycle-profile"
+assert_contains "tier=B2" "$TEST_ROOT/lifecycle-profile"
+cp "$home/z-codex-router-profile.toml" "$TEST_ROOT/lifecycle-profile-original"
+run_router "$home" enable >"$TEST_ROOT/lifecycle-enable"
+assert_contains "code=OK_ENABLED" "$TEST_ROOT/lifecycle-enable"
+run_router "$home" status >"$TEST_ROOT/lifecycle-status"
+assert_contains "code=OK_STATUS" "$TEST_ROOT/lifecycle-status"
+assert_contains "state=enabled" "$TEST_ROOT/lifecycle-status"
+run_router "$home" disable >"$TEST_ROOT/lifecycle-disable"
+assert_contains "code=OK_DISABLED" "$TEST_ROOT/lifecycle-disable"
+assert_contains "next_command=zcr status" "$TEST_ROOT/lifecycle-disable"
+assert_file_equal "$TEST_ROOT/lifecycle-profile-original" "$home/z-codex-router-profile.toml"
+run_router "$home" enable >"$TEST_ROOT/lifecycle-reenable"
+assert_contains "code=OK_ENABLED" "$TEST_ROOT/lifecycle-reenable"
+run_router "$home" uninstall >"$TEST_ROOT/lifecycle-uninstall"
+assert_contains "profile_preserved=true" "$TEST_ROOT/lifecycle-uninstall"
+assert_file_equal "$TEST_ROOT/lifecycle-profile-original" "$home/z-codex-router-profile.toml"
+run_router "$home" uninstall --purge-profile >"$TEST_ROOT/lifecycle-purge"
+assert_contains "profile_purge_state=purged" "$TEST_ROOT/lifecycle-purge"
+[ ! -e "$home/z-codex-router-profile.toml" ] || fail "purge profile left an override"
+pass
+profile_backup=$(sed -n 's/^profile_backup=//p' "$TEST_ROOT/lifecycle-purge")
+[ -f "$profile_backup" ] && [ -f "$profile_backup.sha256" ] || fail "purge profile backup is missing"
+pass
+expect_fail E_PROFILE_OVERRIDE_INVALID run_router "$home" profile set BAD gpt-5.6-terra high
+assert_contains "code=E_PROFILE_OVERRIDE_INVALID" "$TEST_ROOT/expect.err"
+assert_contains "state=profile-needs-attention" "$TEST_ROOT/expect.err"
+assert_contains "impact=profile-not-modified" "$TEST_ROOT/expect.err"
+assert_contains "retry_safe=true" "$TEST_ROOT/expect.err"
+assert_contains "next_command=zcr profile show" "$TEST_ROOT/expect.err"
 
 # UTF-8 BOM, CRLF, multibyte user content, and post-install edits survive uninstall byte-for-byte.
 home=$TEST_ROOT/bytes
@@ -181,6 +216,9 @@ run_router "$home" profile reset >"$TEST_ROOT/profile-reset"
 backup=$(sed -n 's/^backup=//p' "$TEST_ROOT/profile-reset")
 [ -f "$backup" ] || fail "profile reset backup is missing"
 pass
+run_router "$home" profile backups >"$TEST_ROOT/profile-backups"
+assert_contains "code=OK_PROFILE_BACKUPS" "$TEST_ROOT/profile-backups"
+assert_contains "next_command=zcr profile restore $backup" "$TEST_ROOT/profile-backups"
 run_router "$home" profile restore "$backup" >"$TEST_ROOT/profile-restore"
 assert_file_equal "$TEST_ROOT/profile-original" "$home/z-codex-router-profile.toml"
 run_router "$home" install >/dev/null
@@ -214,7 +252,7 @@ printf '%s\n' absent >"$transaction/current_before_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' 1 >"$transaction/remove_version"
-printf '%s\n' 1.0.1 >"$transaction/version"
+printf '%s\n' 1.1.0 >"$transaction/version"
 printf '%s\n' 4242 >"$transaction/operation_id"
 mv "$home/z-codex-router/current" "$home/z-codex-router/.current-previous-4242"
 expect_fail E_TRANSACTION_PENDING run_router "$home" doctor
@@ -239,7 +277,7 @@ printf '%s\n' absent >"$transaction/current_before_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' 0 >"$transaction/remove_version"
-printf '%s\n' 1.0.1 >"$transaction/version"
+printf '%s\n' 1.1.0 >"$transaction/version"
 printf '%s\n' 4343 >"$transaction/operation_id"
 printf 'user drift\n' >>"$home/AGENTS.md"
 cp "$home/AGENTS.md" "$TEST_ROOT/recover-drift-original"
@@ -264,7 +302,7 @@ cp "$backup/current.sha256" "$transaction/current_before_sha256"
 printf '%s\n' absent >"$transaction/current_intermediate_sha256"
 printf '%s\n' "$(tree_hash "$home/z-codex-router/current")" >"$transaction/current_after_sha256"
 printf '%s\n' 0 >"$transaction/remove_version"
-printf '%s\n' 1.0.1 >"$transaction/version"
+printf '%s\n' 1.1.0 >"$transaction/version"
 printf '%s\n' 4444 >"$transaction/operation_id"
 printf 'tampered backup\n' >>"$backup/AGENTS.md"
 cp "$home/AGENTS.md" "$TEST_ROOT/recover-backup-live"
@@ -349,10 +387,12 @@ home=$TEST_ROOT/cache-build
 source_copy=$TEST_ROOT/source-copy
 mkdir -p "$home" "$source_copy"
 cp -R "$ROOT/plugins/z-codex-router" "$source_copy/"
+run_router "$home" profile set B2 gpt-5.6-terra high >/dev/null
+cp "$home/z-codex-router-profile.toml" "$TEST_ROOT/cache-profile-original"
 run_router "$home" install >/dev/null
 awk '
   !done && $0 ~ /^[[:space:]]*"version"[[:space:]]*:/ {
-    print "  \"version\": \"1.0.1+codex.test-build\","
+    print "  \"version\": \"1.1.0+codex.test-build\","
     done = 1
     next
   }
@@ -361,6 +401,7 @@ awk '
 mv "$source_copy/plugin.json" "$source_copy/z-codex-router/.codex-plugin/plugin.json"
 sh "$source_copy/z-codex-router/scripts/routerctl.sh" --source "$source_copy/z-codex-router" \
   --codex-home "$home" upgrade >"$TEST_ROOT/cache-upgrade"
-assert_contains "version=1.0.1+codex.test-build" "$TEST_ROOT/cache-upgrade"
+assert_contains "version=1.1.0+codex.test-build" "$TEST_ROOT/cache-upgrade"
+assert_file_equal "$TEST_ROOT/cache-profile-original" "$home/z-codex-router-profile.toml"
 run_router "$home" doctor >"$TEST_ROOT/cache-doctor"
-assert_contains "version=1.0.1+codex.test-build" "$TEST_ROOT/cache-doctor"
+assert_contains "version=1.1.0+codex.test-build" "$TEST_ROOT/cache-doctor"

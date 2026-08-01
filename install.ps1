@@ -2,11 +2,12 @@
 param(
     [switch]$Enable,
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')]
-    [string]$Version = "1.0.1",
+    [string]$Version = "1.1.0",
     [string]$BaseUrl,
     [string]$CodexHome = $env:CODEX_HOME,
     [string]$CodexBin = $env:CODEX_BIN,
     [string]$Source,
+    [string]$ReleaseDirectory,
     [switch]$LegacyCleanupDryRun,
     [switch]$LegacyCleanup
 )
@@ -22,7 +23,15 @@ $DownloadedBytes = 0L
 
 function Fail-Bootstrap {
     param([string]$Code, [string]$Message)
-    throw (New-Object System.InvalidOperationException("$Code`: $Message"))
+    $guidance = switch -Wildcard ($Code) {
+        "E_ROUTER_*" { @("state=router-needs-attention", "impact=global-routing-not-enabled", "retry_safe=true", "next_command=zcr status"); break }
+        "E_CHECKSUM_*" { @("state=release-verification-failed", "impact=package-not-installed", "retry_safe=true", "next_command=install.ps1 -ReleaseDirectory <verified-release-dir>"); break }
+        "E_ARCHIVE_*" { @("state=release-verification-failed", "impact=package-not-installed", "retry_safe=true", "next_command=install.ps1 -ReleaseDirectory <verified-release-dir>"); break }
+        "E_ENTRYPOINT_CONFLICT" { @("state=entrypoint-conflict", "impact=existing-command-preserved", "retry_safe=true", "next_command=install.ps1 -Source ."); break }
+        default { @("state=failed", "impact=operation-not-completed", "retry_safe=true", "next_command=install.ps1 -Source .") }
+    }
+    $detail = @("$Code`: $Message", "code=$Code") + $guidance
+    throw ($detail -join "`n")
 }
 
 function Get-Sha256File {
@@ -273,6 +282,81 @@ function Copy-MarketplaceSource {
     Copy-Item -LiteralPath ([IO.Path]::Combine($PackageRoot, "plugins")) -Destination $Destination -Recurse
 }
 
+function Test-ManagedEntrypoint {
+    param([string]$Path)
+    if (-not [IO.File]::Exists($Path)) { return $false }
+    if (((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    return ([IO.File]::ReadAllText($Path, $Utf8NoBom).Contains("z-codex-router-entrypoint-v1"))
+}
+
+function Assert-EntrypointsAvailable {
+    param([string]$PackageRoot, [string]$CodexHomePath)
+    foreach ($name in @("zcr", "zcr.ps1", "zcr.cmd")) {
+        $source = [IO.Path]::Combine($PackageRoot, $name)
+        if (-not [IO.File]::Exists($source)) {
+            Fail-Bootstrap "E_SOURCE_INVALID" "stable entry point is missing: $name"
+        }
+        $destination = [IO.Path]::Combine($CodexHomePath, "bin", $name)
+        if (Test-Path -LiteralPath $destination) {
+            if (-not (Test-ManagedEntrypoint $destination)) {
+                Fail-Bootstrap "E_ENTRYPOINT_CONFLICT" "refusing to overwrite an unmanaged entry point: $destination"
+            }
+        }
+    }
+}
+
+function Write-AtomicFile {
+    param([string]$Source, [string]$Destination)
+    $parent = [IO.Path]::GetDirectoryName($Destination)
+    [void][IO.Directory]::CreateDirectory($parent)
+    $temporary = [IO.Path]::Combine($parent, "." + [IO.Path]::GetFileName($Destination) + "." + [Guid]::NewGuid().ToString("N"))
+    [IO.File]::WriteAllBytes($temporary, [IO.File]::ReadAllBytes($Source))
+    try {
+        if ([IO.File]::Exists($Destination)) {
+            $backup = [IO.Path]::Combine($parent, "." + [Guid]::NewGuid().ToString("N") + ".replace")
+            [IO.File]::Replace($temporary, $Destination, $backup, $true)
+            if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        }
+        else {
+            [IO.File]::Move($temporary, $Destination)
+        }
+    }
+    finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
+function Write-AtomicText {
+    param([string]$Destination, [string]$Text)
+    $parent = [IO.Path]::GetDirectoryName($Destination)
+    [void][IO.Directory]::CreateDirectory($parent)
+    $temporary = [IO.Path]::Combine($parent, "." + [IO.Path]::GetFileName($Destination) + "." + [Guid]::NewGuid().ToString("N"))
+    [IO.File]::WriteAllText($temporary, $Text, $Utf8NoBom)
+    try {
+        if ([IO.File]::Exists($Destination)) {
+            $backup = [IO.Path]::Combine($parent, "." + [Guid]::NewGuid().ToString("N") + ".replace")
+            [IO.File]::Replace($temporary, $Destination, $backup, $true)
+            if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        }
+        else {
+            [IO.File]::Move($temporary, $Destination)
+        }
+    }
+    finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
+function Install-Entrypoints {
+    param([string]$PackageRoot, [string]$CodexHomePath, [string]$CacheRoot)
+    $entrypointDir = [IO.Path]::Combine($CodexHomePath, "bin")
+    foreach ($name in @("zcr", "zcr.ps1", "zcr.cmd")) {
+        Write-AtomicFile ([IO.Path]::Combine($PackageRoot, $name)) ([IO.Path]::Combine($entrypointDir, $name))
+    }
+    $pointer = [IO.Path]::Combine($CodexHomePath, "z-codex-router-entrypoint", "source")
+    Write-AtomicText $pointer ([IO.Path]::Combine($CacheRoot, "plugins", "z-codex-router") + "`n")
+}
+
 function Set-CacheVersion {
     param([string]$Manifest, [string]$CacheVersion)
     $lines = [IO.File]::ReadAllLines($Manifest, $Utf8NoBom)
@@ -374,11 +458,32 @@ try {
     $WorkDir = [IO.Path]::Combine($CodexHome, ".zcr-bootstrap-" + [Guid]::NewGuid().ToString("N"))
     [void][IO.Directory]::CreateDirectory($WorkDir)
 
+    if (-not [String]::IsNullOrEmpty($Source) -and -not [String]::IsNullOrEmpty($ReleaseDirectory)) {
+        Fail-Bootstrap "E_USAGE" "-Source and -ReleaseDirectory cannot be used together"
+    }
     if (-not [String]::IsNullOrEmpty($Source)) {
         if (-not [IO.Directory]::Exists($Source)) {
             Fail-Bootstrap "E_SOURCE_INVALID" "local source path does not exist"
         }
         $packageRoot = [IO.Path]::GetFullPath($Source)
+    }
+    elseif (-not [String]::IsNullOrEmpty($ReleaseDirectory)) {
+        if (-not [IO.Directory]::Exists($ReleaseDirectory)) {
+            Fail-Bootstrap "E_RELEASE_DIRECTORY_INVALID" "release directory does not exist"
+        }
+        $releaseDirectoryFull = [IO.Path]::GetFullPath($ReleaseDirectory)
+        $asset = "z-codex-router-$Version.zip"
+        $sums = [IO.Path]::Combine($releaseDirectoryFull, "SHA256SUMS")
+        $archive = [IO.Path]::Combine($releaseDirectoryFull, $asset)
+        if (-not [IO.File]::Exists($sums)) { Fail-Bootstrap "E_CHECKSUM_ENTRY" "release directory is missing SHA256SUMS" }
+        if (-not [IO.File]::Exists($archive)) { Fail-Bootstrap "E_ARCHIVE_INVALID" "release directory is missing $asset" }
+        $expected = Get-ExpectedChecksum $sums $asset
+        if ((Get-Sha256File $archive) -ne $expected) {
+            Fail-Bootstrap "E_CHECKSUM_MISMATCH" $asset
+        }
+        $extracted = [IO.Path]::Combine($WorkDir, "extracted")
+        Expand-SafeZip $archive $extracted
+        $packageRoot = Find-PackageRoot $extracted
     }
     else {
         $asset = "z-codex-router-$Version.zip"
@@ -404,7 +509,10 @@ try {
         "plugins/z-codex-router/release/manifest.json",
         "plugins/z-codex-router/core/router.md",
         "plugins/z-codex-router/scripts/routerctl.sh",
-        "plugins/z-codex-router/scripts/routerctl.ps1"
+        "plugins/z-codex-router/scripts/routerctl.ps1",
+        "zcr",
+        "zcr.ps1",
+        "zcr.cmd"
     )) {
         $required = [IO.Path]::Combine($packageRoot, $relative.Replace([char]'/', [IO.Path]::DirectorySeparatorChar))
         if (-not [IO.File]::Exists($required)) {
@@ -422,6 +530,7 @@ try {
         Fail-Bootstrap "E_RELEASE_VERSION" "plugin and release manifest versions differ"
     }
     $sourceLauncher = [IO.Path]::Combine($packageRoot, "plugins", "z-codex-router", "scripts", "routerctl.ps1")
+    Assert-EntrypointsAvailable $packageRoot $CodexHome
 
     if ($LegacyCleanupDryRun) {
         Invoke-Routerctl $sourceLauncher @("--source", [IO.Path]::Combine($packageRoot, "plugins", "z-codex-router"), "legacy-cleanup", "--dry-run")
@@ -515,6 +624,7 @@ try {
     if ($cacheReplaced) {
         [IO.Directory]::Delete($cachePrevious, $true)
     }
+    Install-Entrypoints $packageRoot $CodexHome $cacheRoot
     if ($Enable) {
         if ($preflightAction -eq "upgrade") {
             Invoke-Routerctl $cacheLauncher @("upgrade")
@@ -544,8 +654,11 @@ try {
     Write-Output ("ZCR_ENABLED=" + $Enable.IsPresent.ToString().ToLowerInvariant())
     Write-Output "ZCR_CODEX_BIN=$CodexBin"
     Write-Output "ZCR_CODEX_SOURCE=$codexBinSource"
+    Write-Output "ZCR_ENTRYPOINT_POSIX=$([IO.Path]::Combine($CodexHome, "bin", "zcr"))"
+    Write-Output "ZCR_ENTRYPOINT_POWERSHELL=$([IO.Path]::Combine($CodexHome, "bin", "zcr.ps1"))"
+    Write-Output "ZCR_ENTRYPOINT_CMD=$([IO.Path]::Combine($CodexHome, "bin", "zcr.cmd"))"
     Write-Output ("ZCR_ROUTE_CREATE_AUTHORIZATION=" + $(if ($Enable) { "persistent-until-uninstall" } else { "inactive" }))
-    Write-Output "ZCR_NEXT_STEP=start-a-new-task"
+    Write-Output "ZCR_NEXT_COMMAND=zcr status"
 }
 catch {
     [Console]::Error.WriteLine($_.Exception.Message)

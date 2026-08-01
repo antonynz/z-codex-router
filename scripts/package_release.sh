@@ -2,8 +2,19 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-VERSION=1.0.1
 OUT=$ROOT/dist
+
+read_manifest_version() {
+  manifest=$1
+  sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" |
+    sed -n '1p'
+}
+
+VERSION=$(read_manifest_version "$ROOT/plugins/z-codex-router/release/manifest.json")
+printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+  printf 'E_RELEASE_VERSION: release manifest has an invalid version\n' >&2
+  exit 1
+}
 
 usage() {
   printf 'Usage: package_release.sh [--out PATH]\n'
@@ -43,11 +54,15 @@ for entry in \
   CONTRIBUTING.md \
   LICENSE \
   README.md \
+  README.en.md \
   RELEASE_NOTES.md \
   SECURITY.md \
   docs \
   install.ps1 \
   install.sh \
+  zcr \
+  zcr.ps1 \
+  zcr.cmd \
   plugins \
   scripts \
   submission; do
@@ -63,7 +78,18 @@ release_version=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^
 plugin_version=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
   "$stage/plugins/z-codex-router/.codex-plugin/plugin.json" | sed -n '1p')
 [ "$release_version" = "$VERSION" ] && [ "$plugin_version" = "$VERSION" ] || {
-  printf 'E_RELEASE_VERSION: package manifests must both be %s\n' "$VERSION" >&2
+  printf 'E_RELEASE_VERSION: package manifest version drift (expected %s)\n' "$VERSION" >&2
+  exit 1
+}
+install_sh_version=$(sed -n 's/^VERSION=\([0-9][0-9.]*\)$/\1/p' "$stage/install.sh" | sed -n '1p')
+install_ps_version=$(sed -n 's/^[[:space:]]*\[string\]\$Version[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' "$stage/install.ps1" | sed -n '1p')
+router_sh_version=$(sed -n 's/^PUBLIC_VERSION=\([0-9][0-9.]*\)$/\1/p' \
+  "$stage/plugins/z-codex-router/scripts/routerctl.sh" | sed -n '1p')
+router_ps_version=$(sed -n 's/^[[:space:]]*\$script:PublicVersion[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' \
+  "$stage/plugins/z-codex-router/scripts/routerctl.ps1" | sed -n '1p')
+[ "$install_sh_version" = "$VERSION" ] && [ "$install_ps_version" = "$VERSION" ] && \
+  [ "$router_sh_version" = "$VERSION" ] && [ "$router_ps_version" = "$VERSION" ] || {
+  printf 'E_RELEASE_VERSION: installer or controller version drift (expected %s)\n' "$VERSION" >&2
   exit 1
 }
 

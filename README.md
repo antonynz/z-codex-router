@@ -1,297 +1,134 @@
 # Z Codex Router
 
-[中文](#中文) · [English](#english)
+面向 Codex 的纯脚本、可审计、fail-closed 全局任务路由策略。v1.1.0 提供稳定的 `zcr`
+入口、清晰的生命周期命令、可恢复的 profile 自定义，以及 macOS/Linux 与 Windows
+PowerShell 5.1/7 的同一套行为。
 
-**为每个 Codex 任务选择合适的模型：可审计、可恢复、验证失败即停止。**
+[English README](README.en.md) · [命令参考](docs/commands.md) · [手动安装](docs/manual-install.md) · [故障排除](docs/troubleshooting.md) · [架构](docs/architecture.md) · [安全](SECURITY.md) · [路由策略](plugins/z-codex-router/core/router.md)
 
-**Choose the right model for each Codex task: auditable, recoverable, and fail-closed.**
+## 常用操作（先看这里）
 
-公开版本 / Public version: `1.0.1`
+从仓库克隆目录或解压后的 v1.1.0 归档根目录执行。安装器会注册 plugin，并把稳定入口放在
+`$CODEX_HOME/bin`；只有 `--enable` / `-Enable` 会写入受管 AGENTS 路由块。
 
-## 中文
-
-Z Codex Router 是一个仅本地运行的 skills-only Codex 插件。运行时完全由 macOS/Linux 的 POSIX
-`sh` 与 Windows PowerShell 5.1+ 实现；仓库、插件和 Release 不包含 Rust、Python、平台可执行文件或
-其他编译产物。
-
-![Z Codex Router 中文架构](docs/images/z-codex-router-architecture-zh.png)
-
-### 它解决什么
-
-- 按 A0–C3 的统一轴判断副作用、任务明确度、影响面、状态复杂度与风险。
-- 按 Engineering、Product、Business Operations、Design、Testing 等 mode 选择领域验收标准。
-- 用 parent-owned receipt、精确 model/effort 和运行时三态避免静默降级。
-- 正确区分任务创建结果：
-
-  | 创建工具证据 | Router 状态 |
-  | --- | --- |
-  | `threadId` | `ROUTE_READY` |
-  | `clientThreadId` | `ROUTE_PENDING`，禁止重试 |
-  | 当前策略阻止 | `ROUTE_HANDOFF_REQUIRED` |
-  | destination 明确拒绝 tuple | `ROUTE_DESTINATION_TUPLE_UNAVAILABLE` |
-  | project/target/参数明确拒绝 | `ROUTE_INPUT_REJECTED` |
-  | 无法确认是否创建 | `ROUTE_OUTCOME_UNKNOWN`，禁止重试 |
-
-- 把受管路由块放在全局 `AGENTS.md` 前部（可在 UTF-8 BOM 后），并由 Doctor 检查实际指令来源、
-  字节范围、`project_doc_max_bytes`、全局 override 与项目/嵌套指令链。
-
-Router 是“指令路由”，不是宿主层模型切换器。用户明确执行 `--enable` / `-Enable` 后，受管块会
-持续授权 Router 为路由调用一次 `create_thread`，并仅用 `list_threads` / `wait_threads` /
-`send_message_to_thread` 解析和协调该同一任务，直至卸载：A0 在当前根执行，A1–C3 创建恰好一个
-执行根，有效 receipt 执行根不递归创建。该授权不涵盖对外发送、发布、生产变更或其他外部副作用。
-禁止自动降级、当前任务代做、pending/unknown 后重试或 fallback 到 `spawn_agent`。
-
-`ROUTE_READY` 与 `ROUTE_PENDING` 都进入父协调 monitor。创建前，父把唯一 correlation token 写入
-title/prompt。Pending 优先使用宿主显式 resolve；否则 `list_threads` 结果必须唯一匹配 token、
-host、project/cwd 和 createdAt 时间窗，0 个匹配继续有界等待，多匹配或超期进入
-`ROUTE_OUTCOME_UNKNOWN` / `needs-attention`，绝不重建。Title/preview 不可信，只能做 token 等值
-关联。取得 `threadId` 后，父用 cursor 增量、有界 timeout 的 `wait_threads` 只回传有意义的新进展；
-偏差、阻塞或缺少验收证据时仅纠偏同一任务并保留 model/thinking，用户输入请求交还用户。父核对
-acceptance、测试和保护路径后，才以 `completed`、`needs-attention` 或 `failed` 结束协调。
-
-宿主/会话根建议使用 `gpt-5.6-sol` / `medium` 作为理解、分类、下发、监督和验收的协调根；这只是
-自然语言协调建议，不覆盖 A0 的 `current-qualified-root` / `runtime-qualified`，也不改变
-`verified`、`mismatch`、`unobservable` 三态与 fail-closed 语义。父协调根与执行根之间的 receipt、
-进展、纠偏、用户输入转交和最终回报，应尽量跟随原用户的主要语言；原用户使用中文时，线程间自然语言
-通信也尽量使用中文。机器字段、tier、model/effort、opaque token、路径、命令、错误码和协议键保持
-原样。
-
-### 安装资产
-
-GitHub v1.0.1 Release 只包含：
-
-- `z-codex-router-1.0.1.tar.gz`：POSIX 安装与源码。
-- `z-codex-router-1.0.1.zip`：PowerShell 安装与相同源码。
-- `SHA256SUMS`：两份归档的 SHA-256。
-
-两份归档解包后的文件内容相同。公开 manifest、标签和 Release 均保持 `1.0.1`；本地 Codex marketplace
-cache 会使用 `1.0.1+codex.<timestamp>`，让同版本重装能够被新任务重新载入。
-同版本重装会原子刷新已注册的受管 marketplace root；失败时恢复旧 source/plugin。指向受管 cache
-之外的同名 marketplace 会返回冲突，不会被删除或接管。
-
-### 安装并启用
-
-不要求单独安装到 PATH：安装器会先使用显式 `--codex-bin` / `-CodexBin` 或 `CODEX_BIN`，再检查
-PATH 与桌面端 `CODEX_CLI_PATH`；macOS 还会发现 ChatGPT/Codex app bundle 内置的 `codex`，Windows
-会检查用户本地副本与 AppX package 的 `app\resources\codex.exe`。所有候选都必须实际通过 plugin
-marketplace 能力探测。
-Linux 没有固定的官方 ChatGPT desktop 路径，安装器仅检查 PATH、用户 bin 与 AppImage 候选。
-
-macOS/Linux：
+### macOS / Linux
 
 ```sh
-version=1.0.1
-curl --fail --location \
-  --remote-name-all \
-  "https://github.com/antonynz/z-codex-router/releases/download/v${version}/z-codex-router-${version}.tar.gz" \
-  "https://github.com/antonynz/z-codex-router/releases/download/v${version}/SHA256SUMS"
-count=$(awk '$2 == "z-codex-router-1.0.1.tar.gz" { count++ } END { print count + 0 }' SHA256SUMS)
-expected=$(awk '$2 == "z-codex-router-1.0.1.tar.gz" { print $1 }' SHA256SUMS)
+# zcr-test:posix-install
+: "${CODEX_HOME:=$HOME/.codex}"
+export CODEX_HOME
+sh install.sh --source . --enable
+export PATH="$CODEX_HOME/bin:$PATH"
+zcr status
+```
+
+```sh
+PATH="$CODEX_HOME/bin:$PATH"
+zcr enable
+zcr disable
+zcr upgrade
+zcr uninstall                 # 保留 profile
+zcr uninstall --purge-profile # 先备份，再移除 profile
+```
+
+### Windows PowerShell 5.1 / 7
+
+```powershell
+# zcr-test:powershell-install
+if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) { $env:CODEX_HOME = Join-Path $env:USERPROFILE ".codex" }
+.\install.ps1 -Source . -Enable
+& (Join-Path $env:CODEX_HOME "bin\zcr.ps1") status
+```
+
+```powershell
+$zcr = Join-Path $env:CODEX_HOME "bin\zcr.ps1"
+& $zcr enable
+& $zcr disable
+& $zcr upgrade
+& $zcr uninstall
+& $zcr uninstall --purge-profile
+```
+
+`zcr.cmd` 也会随 Windows 安装创建，供 `cmd.exe` 使用。PowerShell 示例使用绝对的稳定
+入口，因此从任意当前目录都可运行；POSIX 示例把 `$CODEX_HOME/bin` 放入当前 shell 的
+`PATH` 后同样如此。
+
+## 安装 release 归档
+
+GitHub Release 为同一源码内容提供两份归档和一份 `SHA256SUMS`：
+
+- `z-codex-router-1.1.0.tar.gz`：macOS / Linux。
+- `z-codex-router-1.1.0.zip`：Windows PowerShell。
+
+POSIX 示例：
+
+```sh
+version=1.1.0
+base="https://github.com/antonynz/z-codex-router/releases/download/v$version"
+curl --fail --location --remote-name "$base/z-codex-router-$version.tar.gz"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+expected=$(awk '$2 == "z-codex-router-1.1.0.tar.gz" { print $1 }' SHA256SUMS)
+test -n "$expected"
 if command -v sha256sum >/dev/null 2>&1; then
-  actual=$(sha256sum "z-codex-router-${version}.tar.gz" | awk '{ print tolower($1) }')
+  actual=$(sha256sum "z-codex-router-$version.tar.gz" | awk '{print $1}')
 else
-  actual=$(shasum -a 256 "z-codex-router-${version}.tar.gz" | awk '{ print tolower($1) }')
+  actual=$(shasum -a 256 "z-codex-router-$version.tar.gz" | awk '{print $1}')
 fi
-[ "$count" -eq 1 ] && [ "$actual" = "$expected" ] || exit 1
-tar -xzf "z-codex-router-${version}.tar.gz"
-cd "z-codex-router-${version}"
-sh install.sh --source . --enable
+test "$actual" = "$expected"
+tar -xzf "z-codex-router-$version.tar.gz"
+cd "z-codex-router-$version"
+sh install.sh --enable
 ```
 
-Windows PowerShell 5.1+：
+PowerShell 示例：
 
 ```powershell
-$Version = "1.0.1"
-Invoke-WebRequest `
-  -Uri "https://github.com/antonynz/z-codex-router/releases/download/v$Version/z-codex-router-$Version.zip" `
-  -OutFile "z-codex-router-$Version.zip"
-Invoke-WebRequest `
-  -Uri "https://github.com/antonynz/z-codex-router/releases/download/v$Version/SHA256SUMS" `
-  -OutFile SHA256SUMS
-$Lines = @(Select-String -Path SHA256SUMS -Pattern "^([0-9a-f]{64})  z-codex-router-1\.0\.0\.zip$")
-if ($Lines.Count -ne 1) { throw "invalid SHA256SUMS" }
-$Expected = $Lines[0].Matches[0].Groups[1].Value
-$Actual = (Get-FileHash -LiteralPath "z-codex-router-$Version.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($Actual -ne $Expected) { throw "archive checksum mismatch" }
-Expand-Archive -LiteralPath "z-codex-router-$Version.zip" -DestinationPath .
+$Version = "1.1.0"
+$Base = "https://github.com/antonynz/z-codex-router/releases/download/v$Version"
+Invoke-WebRequest -UseBasicParsing "$Base/z-codex-router-$Version.zip" -OutFile "z-codex-router-$Version.zip"
+Invoke-WebRequest -UseBasicParsing "$Base/SHA256SUMS" -OutFile "SHA256SUMS"
+$Expected = ((Get-Content SHA256SUMS) | Where-Object { $_ -match "z-codex-router-$Version.zip$" } | Select-Object -First 1).Split()[0]
+if ((Get-FileHash "z-codex-router-$Version.zip" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected.ToLowerInvariant()) { throw "SHA256 mismatch" }
+Expand-Archive "z-codex-router-$Version.zip" -DestinationPath .
 Set-Location "z-codex-router-$Version"
-.\install.ps1 -Source . -Enable
+.\install.ps1 -Enable
 ```
 
-从本地 checkout 测试：
+离线或镜像场景可以让安装器验证已下载的同名归档和 `SHA256SUMS`：
 
 ```sh
-sh install.sh --source . --enable
+sh install.sh --release-dir /absolute/path/to/release --enable
 ```
 
 ```powershell
-.\install.ps1 -Source . -Enable
+.\install.ps1 -ReleaseDirectory C:\path\to\release -Enable
 ```
 
-普通安装（不带 enable）只注册带 cache build metadata 的插件 source，并执行只读 preflight；只有
-`--enable` / `-Enable` 才修改全局 Router state，并持续授权上述单根路由创建；卸载即撤销。安装、
-升级和卸载后必须新开任务，已有任务不会重新加载指令或技能。
+## 生命周期与 profile
 
-### 旧 Rust 安装边界
+Bootstrap 安装器注册 plugin 来源；`zcr install` / `zcr enable` 写入受管路由块；`zcr disable`
+只移除受管路由块；`zcr uninstall` 移除受管 payload。`disable` 保留 plugin 与 profile；
+`uninstall` 默认也保留 profile。
+`uninstall --purge-profile` 会先在 `$CODEX_HOME/z-codex-router-profile-backups/` 创建带 SHA-256
+metadata 的备份。
 
-脚本版不迁移旧状态。检测到旧 `current.json`、旧 transaction、旧受管块或旧权限状态时，fresh
-install 返回 `E_LEGACY_INSTALL_DETECTED`。严格顺序是：
+无需编辑 TOML 即可调整一个 tier：
 
 ```sh
-sh install.sh --source . --legacy-cleanup-dry-run
-sh install.sh --source . --legacy-cleanup
-sh install.sh --source . --enable
+zcr profile set B2 gpt-5.6-terra high
+zcr profile show
+zcr profile backups
 ```
 
-```powershell
-.\install.ps1 -Source . -LegacyCleanupDryRun
-.\install.ps1 -Source . -LegacyCleanup
-.\install.ps1 -Source . -Enable
-```
+常用 lifecycle 与 profile 命令输出稳定的 `code=...`、`state=...`、`impact=...`、
+`retry_safe=...` 和一个 `next_command=...`；受控失败路径也提供同一组诊断字段。`status` 对
+disabled、shadowed、legacy-cleanup-required 和 recovery-required 状态给出无副作用的下一步建议。
 
-Cleanup 会先备份 `AGENTS.md`、存在时的 `config.toml` 和旧 Router state，只移除由 marker、version
-与 hash 共同识别的旧内容。块漂移、旧 transaction 或旧权限管理 state 会停止；不会猜测或删除用户
-权限键。
+## 支持边界
 
-### 控制面
+- 不修改 `config.toml`、用户 profile 或全局 override，除非相应的显式命令要求这样做。
+- 不接受不安全的 archive path、链接或编译产物；release 包必须通过 SHA-256 校验。
+- 现有 routing 分类、stable mapping、schema、动态降级、telemetry、多根 handoff、no-Luna
+  默认值和授权边界不属于本次 lifecycle 表面，保持不变。
 
-macOS/Linux：
-
-```sh
-plugins/z-codex-router/scripts/routerctl.sh doctor --cwd /path/to/project
-```
-
-Windows：
-
-```powershell
-plugins\z-codex-router\scripts\routerctl.ps1 doctor --cwd C:\path\to\project
-```
-
-生命周期命令：
-
-- `dry-run`
-- `install`
-- `doctor [--cwd PATH]`
-- `upgrade [--dry-run]`
-- `recover`
-- `rollback`
-- `uninstall`
-- `legacy-cleanup [--dry-run]`
-- `profile show|init|validate|set|reset|restore`
-
-脚本版没有审批、sandbox 或 `config.toml` 管理命令。Profile override 位于
-`<codex_home>/z-codex-router-profile.toml`，生命周期操作不会改写或删除它。
-
-### 数据保护
-
-- 状态使用 `z-codex-router/current/` 下的小文件、不可变 `versions/<version>/`、锁目录、transaction
-  目录和逐字节 backup。
-- 新安装保留 BOM、换行风格和原始用户 bytes；卸载只移除经 hash 验证的 managed prefix，并保留安装
-  后的用户编辑。
-- 非空全局 `AGENTS.override.md` 返回 `E_GLOBAL_OVERRIDE_ACTIVE`，不会被修改。
-- Recover 先校验 backup hash；只接受 transaction 记录的 before/intermediate/after 状态，未知
-  drift 停止。
-- Rollback 在完成后用户又修改过 `AGENTS.md` 时停止，绝不以旧整文件 backup 覆盖新用户内容。
-- Bootstrap 写入后的 Doctor 若失败，会先 rollback 到写入前状态；rollback 未完成时保留恢复证据并
-  转 Recover。
-
-### 开发与验证
-
-```sh
-sh scripts/test_all.sh
-```
-
-```powershell
-.\scripts\test_all.ps1
-```
-
-CI 在 macOS、Linux、Windows PowerShell 5.1 和 PowerShell 7 上运行生命周期、profile、budget、
-override、legacy、打包和保护路径测试。`verify_source` 扫描当前树与重写后的全部可达 Git blobs，
-拒绝 Mach-O、ELF、PE/EXE；PNG 明确保留。
-
-本项目不是 OpenAI 官方产品，也未声明已获 OpenAI Marketplace 审核或上架。Apache-2.0 licensed.
-
-## English
-
-Z Codex Router is a local-only, skills-only Codex plugin. Its runtime is implemented entirely in
-POSIX `sh` for macOS/Linux and Windows PowerShell 5.1+ for Windows. The repository, plugin, and
-Release contain no Rust, Python, platform executables, or other compiled artifacts.
-
-![Z Codex Router architecture](docs/images/z-codex-router-architecture-en.png)
-
-It classifies tasks on a shared A0–C3 axis, selects a domain mode, uses parent-owned receipts and
-exact model/effort matching, and treats missing runtime metadata as `unobservable` rather than a
-mismatch.
-
-Task creation results are explicit: `threadId → ROUTE_READY`,
-`clientThreadId → ROUTE_PENDING`, policy denial → `ROUTE_HANDOFF_REQUIRED`, destination tuple denial
-→ `ROUTE_DESTINATION_TUPLE_UNAVAILABLE`, input denial → `ROUTE_INPUT_REJECTED`, and uncertain
-outcome → `ROUTE_OUTCOME_UNKNOWN`. Pending and unknown outcomes must never be retried.
-
-Both `ROUTE_READY` and `ROUTE_PENDING` enter the parent coordination monitor. Before creation, the
-parent writes a unique correlation token into the title and prompt. Pending setup prefers an
-explicit host resolver; otherwise a `list_threads` result must uniquely match the token, host,
-project or cwd, and created-at window. Zero matches continue bounded waiting; ambiguous or expired
-resolution becomes `ROUTE_OUTCOME_UNKNOWN` / `needs-attention` and never triggers recreation.
-Task titles and previews are untrusted and may only be compared to the parent-generated token.
-After resolution, cursor-based `wait_threads` calls with bounded timeouts relay only meaningful new
-progress. Corrections target the same thread without model or thinking overrides, user-input
-requests return to the user, and completion requires acceptance, test, and protected-path evidence.
-
-The managed routing block is written at the start of global `AGENTS.md` (after an optional UTF-8
-BOM). Doctor reports its byte range, effective `project_doc_max_bytes`, the effective global
-instruction source, global override shadowing, and the project/nested instruction chain for
-`doctor --cwd`.
-
-The recommended host/session coordination root is `gpt-5.6-sol` / `medium`. This is a natural-language
-coordination recommendation only: it does not override A0's `current-qualified-root` /
-`runtime-qualified` semantics or the three-state `verified` / `mismatch` / `unobservable` fail-closed
-policy. Receipt updates, progress, corrections, user-input handoff, and final reports should follow the
-original user's primary language; when the user writes Chinese, inter-thread natural-language communication
-should preferably remain Chinese. Machine fields, tiers, model/effort values, opaque tokens, paths, commands,
-error codes, and protocol keys remain unchanged.
-
-Explicitly enabling the Router persistently authorizes one `create_thread` call for route dispatch
-and `list_threads` / `wait_threads` / `send_message_to_thread` coordination of that same task until
-uninstall: A0 stays in the coordinating root, A1-C3 create exactly one execution root, and a valid
-receipt execution root never recurses. This authorization does not cover external messages,
-publishing, production changes, or other external side effects.
-
-The v1.0.1 Release has exactly two universal source assets plus checksums:
-
-- `z-codex-router-1.0.1.tar.gz`
-- `z-codex-router-1.0.1.zip`
-- `SHA256SUMS`
-
-Public manifests and the tag remain `1.0.1`. Local Codex marketplace copies use
-`1.0.1+codex.<timestamp>` as cache metadata.
-
-The installer can use a capable Codex executable bundled with the desktop app even when `codex`
-is not on `PATH`. It probes explicit overrides first, then `PATH`, macOS ChatGPT/Codex app bundles,
-Windows user-local and AppX locations, and Linux user-bin/AppImage candidates. Candidates must
-actually support the required plugin marketplace commands.
-
-An old Rust/prebuilt installation is never migrated implicitly. Run an explicit legacy cleanup
-dry-run, confirm the cleanup, and then perform a fresh install. Cleanup backs up user instructions,
-configuration, and old Router state before removing only marker/version/hash-identified Router
-content. Drift or an unfinished legacy transaction stops without overwriting user files.
-
-The script control plane supports install, Doctor, upgrade, recover, rollback, uninstall,
-legacy cleanup, and profile management. It has no approval, sandbox, or `config.toml` management
-commands.
-
-If post-write Doctor validation fails, bootstrap rolls back to the pre-write Router state; an
-incomplete rollback preserves recovery evidence and stops.
-
-Run the full suites with:
-
-```sh
-sh scripts/test_all.sh
-```
-
-```powershell
-.\scripts\test_all.ps1
-```
-
-This is not an official OpenAI product and does not claim OpenAI Marketplace review or listing.
-Licensed under Apache-2.0.
+有关兼容、恢复、隐私和贡献，请参阅 [docs/index.md](docs/index.md)、[AGENT_INSTALL.md](AGENT_INSTALL.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。

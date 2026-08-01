@@ -1,5 +1,24 @@
 # 变更日志
 
+## 1.1.0 - 2026-08-01
+
+- 新增稳定 `zcr`、`zcr.ps1` 和 `zcr.cmd` 入口；安装后可从任意工作目录运行用户生命周期命令。
+- 明确 `install`、`upgrade`、`enable`、`disable`、`status`、`uninstall` 语义；`status` 对 disabled、
+  shadowed、legacy 和 transaction recovery 状态给出不写入的下一步建议。
+- `disable` 保留 plugin 与 profile；`uninstall` 默认保留 profile，`--purge-profile` 先创建含 SHA-256
+  metadata 的受管备份再删除。
+- 增强 profile 输出：`profile set` 回显 tier/model/effort，`profile show` 给出可复制下一命令，
+  `profile backups` 列出受管恢复点；升级逐字节保留 profile override。
+- 为受控失败路径输出稳定 `E_*` code、state、impact、retry safety 和一个 recommended next command。
+- POSIX 与 PowerShell installer 都安装 entrypoint，并支持校验本地 `SHA256SUMS` + 归档的 offline
+  `--release-dir` / `-ReleaseDirectory` bootstrap 路径。
+- 将 README 拆分为中文优先 `README.md` 与英文 `README.en.md`，新增安装、命令、故障排除、架构文档，
+  并在 CI/release gate 执行 README install block、bootstrap 与用户命令测试。
+- 打包脚本从 release manifest 派生版本，并交叉校验 manifest、installer、controller、archive 文件名与
+  SHA256SUMS，消除版本/checksum drift。
+- 未修改 A0–C3 classification、stable Luna/Terra/Sol mapping、profile schema、动态降级、telemetry、
+  multi-root handoff、no-Luna defaults 或 security authorization boundary。
+
 ## 1.0.1 - 2026-07-31
 
 - 优化 GPT-5.6 profile routing 映射：B1 从 Terra high 改为 Luna max（利用 Luna 降价 80% 后的

@@ -40,7 +40,7 @@ dry-run，保留用户配置，校验 profile、指令预算与 hash，保持 ca
 
 ## 发布说明草稿
 
-Z Codex Router 1.0.1 提供 skills-only 本地 router plugin、POSIX sh 与 Windows PowerShell 5.1+
+Z Codex Router 1.1.0 提供 skills-only 本地 router plugin、POSIX sh 与 Windows PowerShell 5.1+
 纯脚本 control plane、可移植 policy core、reference 与 disabled-candidate profile、七个参数化
 role template、普通 install/enable 不触碰 `config.toml` 的边界、不可变版本目录、事务
 backup/rollback、AGENTS 指令预算诊断，以及 `create_thread` ready/pending/failure 分类。Router 不

@@ -48,6 +48,30 @@ function Invoke-Installer {
     }
 }
 
+function Invoke-Entrypoint {
+    param([string]$Path, [string[]]$Arguments, [int]$ExpectedExit = 0)
+    $token = [Guid]::NewGuid().ToString("N")
+    $stdout = [IO.Path]::Combine($TestRoot, "$token.entrypoint.out")
+    $stderr = [IO.Path]::Combine($TestRoot, "$token.entrypoint.err")
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 turns native stderr into ErrorRecord output.
+        $ErrorActionPreference = "Continue"
+        & $Engine -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments 1> $stdout 2> $stderr
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($code -ne $ExpectedExit) {
+        Fail-Test "entrypoint exit=$code expected=$ExpectedExit stderr=$([IO.File]::ReadAllText($stderr))"
+    }
+    return [PSCustomObject]@{
+        Output = if ([IO.File]::Exists($stdout)) { [IO.File]::ReadAllText($stdout) } else { "" }
+        Error = if ([IO.File]::Exists($stderr)) { [IO.File]::ReadAllText($stderr) } else { "" }
+    }
+}
+
 try {
     $log = [IO.Path]::Combine($TestRoot, "codex.log")
     if ($env:OS -eq "Windows_NT") {
@@ -62,7 +86,7 @@ try {
 
     $caseHome = [IO.Path]::Combine($TestRoot, "home")
     $result = Invoke-Installer @("-Source", $Root, "-CodexHome", $caseHome, "-CodexBin", $fake, "-Enable") 0 @{ FAKE_CODEX_LOG = $log }
-    Assert-Contains $result.Output "ZCR_VERSION=1.0.1"
+    Assert-Contains $result.Output "ZCR_VERSION=1.1.0"
     Assert-Contains $result.Output "ZCR_ENABLED=true"
     Assert-Contains $result.Output "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall"
     Assert-Contains $result.Output "ZCR_CODEX_SOURCE=explicit"
@@ -72,6 +96,32 @@ try {
     Assert-Contains $managedAgents "A1"
     Assert-Contains ([IO.File]::ReadAllText($log)) "plugin marketplace add"
     Assert-Contains ([IO.File]::ReadAllText($log)) "plugin add z-codex-router@z-codex-router"
+    $entrypoint = [IO.Path]::Combine($caseHome, "bin", "zcr.ps1")
+    if (-not [IO.File]::Exists($entrypoint) -or -not [IO.File]::Exists([IO.Path]::Combine($caseHome, "bin", "zcr.cmd"))) {
+        Fail-Test "stable Windows zcr entry points are missing"
+    }
+    Pass-Test
+    $savedCodexHome = $env:CODEX_HOME
+    try {
+        $env:CODEX_HOME = $caseHome
+        $status = Invoke-Entrypoint $entrypoint @("status")
+    }
+    finally {
+        $env:CODEX_HOME = $savedCodexHome
+    }
+    Assert-Contains $status.Output "code=OK_STATUS"
+    Assert-Contains $status.Output "state=enabled"
+
+    # The offline release-directory path exercises the same ZIP and checksum
+    # verification used by remote Windows bootstrap installs.
+    $releaseDirectory = [IO.Path]::Combine($TestRoot, "release")
+    & $Engine -NoProfile -ExecutionPolicy Bypass -File ([IO.Path]::Combine($Root, "scripts", "package_release.ps1")) -Out $releaseDirectory
+    if ($LASTEXITCODE -ne 0) { Fail-Test "could not package test release" }
+    $releaseHome = [IO.Path]::Combine($TestRoot, "release-home")
+    $result = Invoke-Installer @("-ReleaseDirectory", $releaseDirectory, "-CodexHome", $releaseHome, "-CodexBin", $fake, "-Enable") 0 @{ FAKE_CODEX_LOG = $log }
+    Assert-Contains $result.Output "ZCR_VERSION=1.1.0"
+    Assert-Contains $result.Output "ZCR_ENABLED=true"
+    Assert-Contains $result.Output "ZCR_ENTRYPOINT_POWERSHELL="
 
     # Registration failure preserves AGENTS and does not enable Router.
     $caseHome = [IO.Path]::Combine($TestRoot, "failure")
@@ -81,12 +131,35 @@ try {
     $before = [IO.File]::ReadAllBytes($agents)
     $result = Invoke-Installer @("-Source", $Root, "-CodexHome", $caseHome, "-CodexBin", $fake, "-Enable") 1 @{ FAKE_CODEX_FAIL = "1" }
     Assert-Contains $result.Error "E_CODEX_REGISTRATION"
+    Assert-Contains $result.Error "code=E_CODEX_REGISTRATION"
+    Assert-Contains $result.Error "state=failed"
+    Assert-Contains $result.Error "impact=operation-not-completed"
+    Assert-Contains $result.Error "retry_safe=true"
+    Assert-Contains $result.Error "next_command=install.ps1 -Source ."
     if ([Convert]::ToBase64String($before) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($agents))) {
         Fail-Test "registration failure changed AGENTS.md"
     }
     Pass-Test
     if ([IO.Directory]::Exists([IO.Path]::Combine($caseHome, "z-codex-router", "current"))) {
         Fail-Test "registration failure enabled Router"
+    }
+    Pass-Test
+
+    # Never replace an unrelated stable command in the Codex home.
+    $caseHome = [IO.Path]::Combine($TestRoot, "entrypoint-conflict")
+    $entrypointDirectory = [IO.Path]::Combine($caseHome, "bin")
+    [void][IO.Directory]::CreateDirectory($entrypointDirectory)
+    $userEntrypoint = [IO.Path]::Combine($entrypointDirectory, "zcr")
+    [IO.File]::WriteAllText($userEntrypoint, "user command`n", $Utf8NoBom)
+    $before = [IO.File]::ReadAllBytes($userEntrypoint)
+    $result = Invoke-Installer @("-Source", $Root, "-CodexHome", $caseHome, "-CodexBin", $fake, "-Enable") 1
+    Assert-Contains $result.Error "E_ENTRYPOINT_CONFLICT"
+    Assert-Contains $result.Error "state=entrypoint-conflict"
+    Assert-Contains $result.Error "impact=existing-command-preserved"
+    Assert-Contains $result.Error "retry_safe=true"
+    Assert-Contains $result.Error "next_command=install.ps1 -Source ."
+    if ([Convert]::ToBase64String($before) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($userEntrypoint))) {
+        Fail-Test "entrypoint conflict replaced user command"
     }
     Pass-Test
 

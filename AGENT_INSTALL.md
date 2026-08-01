@@ -1,6 +1,6 @@
 # Agent 安装与生命周期协议
 
-本协议面向代表用户执行安装的 Codex Agent。公开版本固定为 `1.0.1`，实现为 POSIX `sh` 与 Windows
+本协议面向代表用户执行安装的 Codex Agent。公开版本固定为 `1.1.0`，实现为 POSIX `sh` 与 Windows
 PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 
 ## 不可越过的边界
@@ -25,8 +25,8 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 
 | 主机 | 归档 |
 | --- | --- |
-| macOS / Linux | `z-codex-router-1.0.1.tar.gz` |
-| Windows PowerShell | `z-codex-router-1.0.1.zip` |
+| macOS / Linux | `z-codex-router-1.1.0.tar.gz` |
+| Windows PowerShell | `z-codex-router-1.1.0.zip` |
 
 两份归档内容相同。校验要求：
 
@@ -35,12 +35,12 @@ PowerShell 5.1+；不得寻找、构建或下载平台可执行文件。
 3. 下载归档 SHA-256 与清单完全相同。
 4. 归档拒绝绝对路径、`..`、重复 entry、链接和特殊文件。
 5. 解包树拒绝 Mach-O、ELF、PE/EXE 魔数。
-6. Plugin 与 release manifest 都必须是公开 `1.0.1`。
+6. Plugin 与 release manifest 都必须是公开 `1.1.0`。
 7. `.agents/plugins/marketplace.json`、plugin manifest、两种 controller 和 Router core 必须存在。
 
 Bootstrap 会把 marketplace source 复制到
-`<codex_home>/z-codex-router-marketplaces/1.0.1+codex.<timestamp>/`，只在该本地副本中更新 plugin
-manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.0.1`。
+`<codex_home>/z-codex-router-marketplaces/1.1.0+codex.<timestamp>/`，只在该本地副本中更新 plugin
+manifest 的 build metadata。Release manifest、Git tag 与公开源码始终为 `1.1.0`。
 
 若 `z-codex-router` marketplace 已指向上述受管目录，重装会保留已注册 root 路径并原子替换其中的
 source；plugin 注册失败则恢复旧 source 并重新注册旧 plugin。若同名 marketplace 指向受管目录之外，
@@ -83,7 +83,8 @@ PowerShell：
 5. 使用 Codex CLI 注册 marketplace 并安装 plugin。
 6. 只有 enable 请求才从新 cache launcher 执行 `install`。
 7. 执行 `doctor` 并要求 `OK_ENABLED`。
-8. 回报公开版本、本地 cache version、source、下载字节、Router action 和 `start-a-new-task`。
+8. 回报公开版本、本地 cache version、source、下载字节、Router action、稳定入口和
+   `ZCR_NEXT_COMMAND=zcr status`。
 
 任何 Codex registration 失败都发生在 Router 写入之前；`AGENTS.md`、`config.toml` 与 Router state
 必须保持不变。若 Router 写入后的 Doctor 失败，bootstrap 必须立即 rollback；rollback 失败时保留
@@ -136,7 +137,7 @@ Rollback 只撤销最近完成的生命周期操作。若 `AGENTS.md` 在该操�
 
 ## Upgrade
 
-公开版本可以保持 `1.0.1`，本地 source identity 使用新的 `+codex.<timestamp>`。升级顺序：
+公开版本可以保持 `1.1.0`，本地 source identity 使用新的 `+codex.<timestamp>`。升级顺序：
 
 1. 新 controller 执行 `upgrade --dry-run`。
 2. 验证当前 managed prefix、payload、profile、override 与 transaction。
@@ -165,12 +166,13 @@ profile init
 profile validate
 profile set <tier> <model> <effort>
 profile reset
+profile backups
 profile restore <backup>
 ```
 
 Reset 先写受管 TOML backup 与 `.sha256` metadata，再删除 override。Restore 只接受
 `z-codex-router-profile-backups/` 内的常规 backup，验证路径、hash 和完整 mapping，并拒绝覆盖已有
-override。生命周期与 uninstall 始终保留 override。
+override。生命周期默认保留 override；只有显式 `uninstall --purge-profile` 才会先备份再移除它。
 
 ## Legacy cleanup
 

@@ -3,6 +3,10 @@ Set-StrictMode -Version 2.0
 
 $Root = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, ".."))
 $Engine = (Get-Process -Id $PID).Path
+$ManifestText = [IO.File]::ReadAllText([IO.Path]::Combine($Root, "plugins", "z-codex-router", "release", "manifest.json"))
+$VersionMatch = [Regex]::Match($ManifestText, '(?m)^\s*"version"\s*:\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+if (-not $VersionMatch.Success) { throw "release manifest version is invalid" }
+$Version = $VersionMatch.Groups[1].Value
 $TestRoot = [IO.Path]::Combine([IO.Path]::GetTempPath(), "zcr-ps-release-tests-" + [Guid]::NewGuid().ToString("N"))
 [void][IO.Directory]::CreateDirectory($TestRoot)
 
@@ -31,8 +35,8 @@ try {
     $dist = [IO.Path]::Combine($TestRoot, "dist")
     & $Engine -NoProfile -ExecutionPolicy Bypass -File ([IO.Path]::Combine($PSScriptRoot, "package_release.ps1")) -Out $dist
     if ($LASTEXITCODE -ne 0) { throw "package_release.ps1 failed" }
-    $tarAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.1.tar.gz")
-    $zipAsset = [IO.Path]::Combine($dist, "z-codex-router-1.0.1.zip")
+    $tarAsset = [IO.Path]::Combine($dist, "z-codex-router-$Version.tar.gz")
+    $zipAsset = [IO.Path]::Combine($dist, "z-codex-router-$Version.zip")
     if (-not [IO.File]::Exists($tarAsset) -or -not [IO.File]::Exists($zipAsset)) {
         throw "release assets are missing"
     }
@@ -43,10 +47,20 @@ try {
     & tar -xzf $tarAsset -C $tarRoot
     if ($LASTEXITCODE -ne 0) { throw "tar extraction failed" }
     Expand-Archive -LiteralPath $zipAsset -DestinationPath $zipRoot
-    $tarPackage = [IO.Path]::Combine($tarRoot, "z-codex-router-1.0.1")
-    $zipPackage = [IO.Path]::Combine($zipRoot, "z-codex-router-1.0.1")
+    $tarPackage = [IO.Path]::Combine($tarRoot, "z-codex-router-$Version")
+    $zipPackage = [IO.Path]::Combine($zipRoot, "z-codex-router-$Version")
     if ((Get-TreeHash $tarPackage) -ne (Get-TreeHash $zipPackage)) {
         throw "tar/zip extracted content differs"
+    }
+    $sums = [IO.File]::ReadAllText([IO.Path]::Combine($dist, "SHA256SUMS"))
+    if ($sums -notmatch [Regex]::Escape(((Get-FileHash -LiteralPath $tarAsset -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + [IO.Path]::GetFileName($tarAsset))) -or
+        $sums -notmatch [Regex]::Escape(((Get-FileHash -LiteralPath $zipAsset -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + [IO.Path]::GetFileName($zipAsset)))) {
+        throw "release checksums do not match packaged assets"
+    }
+    foreach ($entrypoint in @("zcr", "zcr.ps1", "zcr.cmd")) {
+        if (-not [IO.File]::Exists([IO.Path]::Combine($tarPackage, $entrypoint))) {
+            throw "release entry point is missing: $entrypoint"
+        }
     }
     $caseHome = [IO.Path]::Combine($TestRoot, "home")
     & $Engine -NoProfile -ExecutionPolicy Bypass -File ([IO.Path]::Combine($tarPackage, "plugins", "z-codex-router", "scripts", "routerctl.ps1")) --source ([IO.Path]::Combine($tarPackage, "plugins", "z-codex-router")) --codex-home $caseHome dry-run

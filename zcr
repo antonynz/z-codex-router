@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+# z-codex-router-entrypoint-v1
+# Stable POSIX entry point. The installer owns the source pointer; this file
+# intentionally contains no routing policy and can be called from any cwd.
+set -eu
+
+fail() {
+  code=$1
+  shift
+  printf '%s: %s\n' "$code" "$*" >&2
+  printf '%s\n' "code=$code" "state=entrypoint-unavailable" \
+    "impact=global-routing-not-modified" "retry_safe=true" \
+    "next_command=sh install.sh --enable" >&2
+  exit 1
+}
+
+if [ -n "${CODEX_HOME:-}" ]; then
+  zcr_home=$CODEX_HOME
+else
+  [ -n "${HOME:-}" ] || fail E_CODEX_HOME_REQUIRED "set CODEX_HOME or HOME"
+  zcr_home=$HOME/.codex
+fi
+case "$zcr_home" in
+  /*) ;;
+  *) fail E_CODEX_HOME_INVALID "Codex home must be absolute" ;;
+esac
+[ -d "$zcr_home" ] || fail E_ZCR_SOURCE_UNAVAILABLE "Codex home does not exist; run the installer first"
+zcr_home=$(CDPATH= cd -- "$zcr_home" && pwd -P)
+pointer=$zcr_home/z-codex-router-entrypoint/source
+[ -f "$pointer" ] && [ ! -L "$pointer" ] ||
+  fail E_ZCR_SOURCE_UNAVAILABLE "stable source pointer is missing; run the installer again"
+source_root=$(sed -n '1p' "$pointer")
+[ -n "$source_root" ] || fail E_ZCR_SOURCE_UNAVAILABLE "stable source pointer is empty"
+case "$source_root" in
+  "$zcr_home"/z-codex-router-marketplaces/*/plugins/z-codex-router) ;;
+  *) fail E_ZCR_SOURCE_UNAVAILABLE "stable source pointer escapes the managed marketplace cache" ;;
+esac
+[ -d "$source_root" ] && [ ! -L "$source_root" ] ||
+  fail E_ZCR_SOURCE_UNAVAILABLE "managed Router source is unavailable; run the installer again"
+launcher=$source_root/scripts/routerctl.sh
+[ -f "$launcher" ] && [ ! -L "$launcher" ] ||
+  fail E_ZCR_SOURCE_UNAVAILABLE "managed POSIX control plane is unavailable; run the installer again"
+
+exec sh "$launcher" --source "$source_root" --codex-home "$zcr_home" "$@"

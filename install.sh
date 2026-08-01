@@ -4,12 +4,13 @@ set -eu
 REPOSITORY=antonynz/z-codex-router
 PLUGIN_NAME=z-codex-router
 MARKETPLACE_NAME=z-codex-router
-VERSION=1.0.1
+VERSION=1.1.0
 BASE_URL=
 CODEX_HOME_ARG=${CODEX_HOME:-}
 CODEX_BIN=${CODEX_BIN:-}
 CODEX_BIN_SOURCE=
 SOURCE_PACKAGE=
+RELEASE_DIR=
 ENABLE=0
 LEGACY_MODE=
 WORK_DIR=
@@ -17,8 +18,9 @@ DOWNLOADED_BYTES=0
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--enable] [--version 1.0.1] [--base-url HTTPS_URL]
+Usage: install.sh [--enable] [--version 1.1.0] [--base-url HTTPS_URL]
                   [--codex-home PATH] [--codex-bin PATH] [--source PATH]
+                  [--release-dir PATH]
        install.sh --legacy-cleanup-dry-run [same source/download options]
        install.sh --legacy-cleanup [same source/download options]
 
@@ -26,13 +28,41 @@ Installs the universal, script-only Z Codex Router source package.
 Global routing changes only with --enable. Enabling persistently authorizes
 route-only create_thread dispatch until uninstall. Legacy Rust installations
 must be explicitly inspected and cleaned before a fresh script installation.
+
+--release-dir verifies the same versioned archive and SHA256SUMS as a remote
+release, but reads them from an already-downloaded release directory. It is
+useful for offline installations and CI verification.
 EOF
+}
+
+failure_guidance() {
+  code=$1
+  case "$code" in
+    E_ROUTER_*)
+      printf '%s\n' "state=router-needs-attention" "impact=global-routing-not-enabled" \
+        "retry_safe=true" "next_command=zcr status"
+      ;;
+    E_CHECKSUM_*|E_ARCHIVE_*)
+      printf '%s\n' "state=release-verification-failed" "impact=package-not-installed" \
+        "retry_safe=true" "next_command=sh install.sh --release-dir /absolute/path/to/release"
+      ;;
+    E_ENTRYPOINT_CONFLICT)
+      printf '%s\n' "state=entrypoint-conflict" "impact=existing-command-preserved" \
+        "retry_safe=true" "next_command=sh install.sh --source ."
+      ;;
+    *)
+      printf '%s\n' "state=failed" "impact=operation-not-completed" \
+        "retry_safe=true" "next_command=sh install.sh --source ."
+      ;;
+  esac
 }
 
 fail() {
   code=$1
   shift
   printf '%s: %s\n' "$code" "$*" >&2
+  printf '%s\n' "code=$code" >&2
+  failure_guidance "$code" >&2
   exit 1
 }
 
@@ -247,6 +277,48 @@ copy_marketplace_source() {
   cp -R "$package/plugins" "$destination/"
 }
 
+entrypoint_is_managed() {
+  path=$1
+  [ -f "$path" ] && [ ! -L "$path" ] &&
+    grep -F 'z-codex-router-entrypoint-v1' "$path" >/dev/null 2>&1
+}
+
+preflight_entrypoints() {
+  for name in zcr zcr.ps1 zcr.cmd; do
+    [ -f "$PACKAGE_ROOT/$name" ] ||
+      fail E_SOURCE_INVALID "stable entry point is missing: $name"
+    destination=$CODEX_HOME_ARG/bin/$name
+    if [ -e "$destination" ] && ! entrypoint_is_managed "$destination"; then
+      fail E_ENTRYPOINT_CONFLICT "refusing to overwrite an unmanaged entry point: $destination"
+    fi
+  done
+}
+
+atomic_install_file() {
+  source=$1
+  destination=$2
+  parent=$(dirname -- "$destination")
+  base=$(basename -- "$destination")
+  mkdir -p "$parent"
+  temporary=$(mktemp "$parent/.$base.XXXXXX")
+  cp "$source" "$temporary"
+  mv -f "$temporary" "$destination"
+}
+
+install_entrypoints() {
+  entrypoint_dir=$CODEX_HOME_ARG/bin
+  for name in zcr zcr.ps1 zcr.cmd; do
+    atomic_install_file "$PACKAGE_ROOT/$name" "$entrypoint_dir/$name"
+  done
+  chmod 755 "$entrypoint_dir/zcr"
+  pointer_dir=$CODEX_HOME_ARG/z-codex-router-entrypoint
+  mkdir -p "$pointer_dir"
+  pointer=$pointer_dir/source
+  temporary=$(mktemp "$pointer_dir/.source.XXXXXX")
+  printf '%s\n' "$CACHE_ROOT/plugins/z-codex-router" >"$temporary"
+  mv -f "$temporary" "$pointer"
+}
+
 rewrite_cache_version() {
   manifest=$1
   cache_version=$2
@@ -327,6 +399,11 @@ while [ "$#" -gt 0 ]; do
       SOURCE_PACKAGE=$2
       shift 2
       ;;
+    --release-dir)
+      [ "$#" -ge 2 ] || fail E_USAGE "--release-dir needs a path"
+      RELEASE_DIR=$2
+      shift 2
+      ;;
     --legacy-cleanup-dry-run)
       [ -z "$LEGACY_MODE" ] || fail E_USAGE "choose one legacy cleanup mode"
       LEGACY_MODE=dry-run
@@ -344,6 +421,8 @@ done
 
 valid_version "$VERSION" ||
   fail E_VERSION_INVALID "expected a stable semantic version without leading v"
+[ -z "$SOURCE_PACKAGE" ] || [ -z "$RELEASE_DIR" ] ||
+  fail E_USAGE "--source and --release-dir cannot be used together"
 if [ -z "$BASE_URL" ]; then
   BASE_URL=https://github.com/$REPOSITORY/releases/download/v$VERSION
 fi
@@ -365,6 +444,9 @@ need_command mktemp
 need_command cp
 need_command mv
 need_command cut
+need_command chmod
+need_command dirname
+need_command basename
 
 if [ -z "$CODEX_HOME_ARG" ]; then
   [ -n "${HOME:-}" ] || fail E_CODEX_HOME_REQUIRED "set CODEX_HOME or HOME"
@@ -380,6 +462,25 @@ WORK_DIR=$(mktemp -d "$CODEX_HOME_ARG/.zcr-bootstrap.XXXXXX")
 if [ -n "$SOURCE_PACKAGE" ]; then
   [ -d "$SOURCE_PACKAGE" ] || fail E_SOURCE_INVALID "local source path does not exist"
   PACKAGE_ROOT=$(CDPATH= cd -- "$SOURCE_PACKAGE" && pwd -P)
+elif [ -n "$RELEASE_DIR" ]; then
+  [ -d "$RELEASE_DIR" ] || fail E_RELEASE_DIRECTORY_INVALID "release directory does not exist"
+  RELEASE_DIR=$(CDPATH= cd -- "$RELEASE_DIR" && pwd -P)
+  asset=z-codex-router-$VERSION.tar.gz
+  sums=$RELEASE_DIR/SHA256SUMS
+  archive=$RELEASE_DIR/$asset
+  [ -f "$sums" ] || fail E_CHECKSUM_ENTRY "release directory is missing SHA256SUMS"
+  [ -f "$archive" ] || fail E_ARCHIVE_INVALID "release directory is missing $asset"
+  expected=$(expected_checksum "$sums" "$asset")
+  [ "$(sha256_file "$archive")" = "$expected" ] ||
+    fail E_CHECKSUM_MISMATCH "$asset"
+  validate_archive "$archive"
+  extracted=$WORK_DIR/extracted
+  mkdir "$extracted"
+  tar -xzf "$archive" -C "$extracted" ||
+    fail E_ARCHIVE_INVALID "source extraction failed"
+  [ -z "$(find "$extracted" -type l -print -quit)" ] ||
+    fail E_ARCHIVE_TYPE "extracted links are forbidden"
+  PACKAGE_ROOT=$(find_package_root "$extracted")
 else
   need_command curl
   asset=z-codex-router-$VERSION.tar.gz
@@ -421,6 +522,7 @@ PLUGIN_VERSION=$(manifest_version "$PACKAGE_ROOT/plugins/z-codex-router/.codex-p
   fail E_RELEASE_VERSION "plugin and release manifest versions differ"
 SOURCE_LAUNCHER=$PACKAGE_ROOT/plugins/z-codex-router/scripts/routerctl.sh
 sh -n "$SOURCE_LAUNCHER" || fail E_SOURCE_INVALID "POSIX control plane has a syntax error"
+preflight_entrypoints
 
 if [ "$LEGACY_MODE" = dry-run ]; then
   run_routerctl "$SOURCE_LAUNCHER" --source "$PACKAGE_ROOT/plugins/z-codex-router" \
@@ -494,6 +596,7 @@ fi
 if [ "$CACHE_REPLACED" -eq 1 ]; then
   rm -rf -- "$CACHE_PREVIOUS"
 fi
+install_entrypoints
 
 if [ "$ENABLE" -eq 1 ]; then
   if [ "$PREFLIGHT_ACTION" = upgrade ]; then
@@ -515,5 +618,8 @@ printf '%s\n' "ZCR_VERSION=$VERSION" "ZCR_CACHE_VERSION=$CACHE_VERSION" \
   "ZCR_ROUTER_ACTION=$PREFLIGHT_ACTION" \
   "ZCR_ENABLED=$([ "$ENABLE" -eq 1 ] && printf true || printf false)" \
   "ZCR_CODEX_BIN=$CODEX_BIN" "ZCR_CODEX_SOURCE=$CODEX_BIN_SOURCE" \
+  "ZCR_ENTRYPOINT_POSIX=$CODEX_HOME_ARG/bin/zcr" \
+  "ZCR_ENTRYPOINT_POWERSHELL=$CODEX_HOME_ARG/bin/zcr.ps1" \
+  "ZCR_ENTRYPOINT_CMD=$CODEX_HOME_ARG/bin/zcr.cmd" \
   "ZCR_ROUTE_CREATE_AUTHORIZATION=$([ "$ENABLE" -eq 1 ] && printf persistent-until-uninstall || printf inactive)" \
-  "ZCR_NEXT_STEP=start-a-new-task"
+  "ZCR_NEXT_COMMAND=zcr status"

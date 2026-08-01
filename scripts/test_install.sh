@@ -61,7 +61,7 @@ marketplace_state=$TEST_ROOT/marketplace-state
 FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
   sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
   --codex-bin "$fake" --enable >"$TEST_ROOT/install-output"
-assert_contains "ZCR_VERSION=1.0.1" "$TEST_ROOT/install-output"
+assert_contains "ZCR_VERSION=1.1.0" "$TEST_ROOT/install-output"
 assert_contains "ZCR_ENABLED=true" "$TEST_ROOT/install-output"
 assert_contains "ZCR_ROUTE_CREATE_AUTHORIZATION=persistent-until-uninstall" "$TEST_ROOT/install-output"
 assert_contains "ZCR_CODEX_SOURCE=explicit" "$TEST_ROOT/install-output"
@@ -73,13 +73,38 @@ assert_contains "plugin add z-codex-router@z-codex-router" "$log"
 sh "$home"/z-codex-router-marketplaces/*/plugins/z-codex-router/scripts/routerctl.sh \
   --codex-home "$home" doctor >"$TEST_ROOT/doctor-output"
 assert_contains "code=OK_ENABLED" "$TEST_ROOT/doctor-output"
+[ -x "$home/bin/zcr" ] || fail "stable POSIX zcr entry point is missing or not executable"
+pass
+[ -f "$home/bin/zcr.ps1" ] && [ -f "$home/bin/zcr.cmd" ] ||
+  fail "stable Windows entry points are missing"
+pass
+mkdir -p "$TEST_ROOT/any-directory"
+(
+  cd "$TEST_ROOT/any-directory"
+  CODEX_HOME="$home" PATH="$home/bin:$PATH" zcr status
+) >"$TEST_ROOT/zcr-status"
+assert_contains "code=OK_STATUS" "$TEST_ROOT/zcr-status"
+assert_contains "state=enabled" "$TEST_ROOT/zcr-status"
 
-# Reinstalling 1.0.1 refreshes the already registered managed marketplace in place.
+# Reinstalling 1.1.0 refreshes the already registered managed marketplace in place.
 FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$marketplace_state \
   sh "$INSTALLER" --source "$ROOT" --codex-home "$home" \
   --codex-bin "$fake" --enable >"$TEST_ROOT/reinstall-output"
 assert_contains "ZCR_ROUTER_ACTION=upgrade" "$TEST_ROOT/reinstall-output"
 assert_contains "ZCR_SOURCE=$(cat "$marketplace_state")" "$TEST_ROOT/reinstall-output"
+
+# A local release directory takes the exact archive+checksum path used by a
+# remote release, allowing deterministic bootstrap verification without HTTP.
+release_dir=$TEST_ROOT/release
+sh "$ROOT/scripts/package_release.sh" --out "$release_dir" >"$TEST_ROOT/package-output"
+home=$TEST_ROOT/release-home
+release_marketplace_state=$TEST_ROOT/release-marketplace-state
+FAKE_CODEX_LOG=$log FAKE_MARKETPLACE_STATE=$release_marketplace_state \
+  sh "$INSTALLER" --release-dir "$release_dir" --codex-home "$home" \
+  --codex-bin "$fake" --enable >"$TEST_ROOT/release-install-output"
+assert_contains "ZCR_VERSION=1.1.0" "$TEST_ROOT/release-install-output"
+assert_contains "ZCR_ENABLED=true" "$TEST_ROOT/release-install-output"
+assert_contains "ZCR_ENTRYPOINT_POSIX=" "$TEST_ROOT/release-install-output"
 
 # Without a PATH CLI, Linux/macOS user-local discovery can supply a capable Codex executable.
 home=$TEST_ROOT/discovery-home
@@ -137,7 +162,29 @@ if FAKE_CODEX_LOG=$TEST_ROOT/override-log sh "$INSTALLER" --source "$ROOT" \
   fail "override preflight unexpectedly succeeded"
 fi
 assert_contains "E_ROUTER_PREFLIGHT" "$TEST_ROOT/override-error"
+assert_contains "state=router-needs-attention" "$TEST_ROOT/override-error"
+assert_contains "impact=global-routing-not-enabled" "$TEST_ROOT/override-error"
+assert_contains "retry_safe=true" "$TEST_ROOT/override-error"
+assert_contains "next_command=zcr status" "$TEST_ROOT/override-error"
 [ ! -s "$TEST_ROOT/override-log" ] || fail "Codex was called after blocked preflight"
+pass
+
+# Stable launchers are intentionally not allowed to overwrite unrelated user
+# commands, and the failure still provides a retry-safe next command.
+home=$TEST_ROOT/entrypoint-conflict
+mkdir -p "$home/bin"
+printf '#!/usr/bin/env sh\necho user-command\n' >"$home/bin/zcr"
+cp "$home/bin/zcr" "$TEST_ROOT/user-zcr"
+if sh "$INSTALLER" --source "$ROOT" --codex-home "$home" --codex-bin "$fake" --enable \
+  >"$TEST_ROOT/entrypoint-conflict-output" 2>"$TEST_ROOT/entrypoint-conflict-error"; then
+  fail "entrypoint conflict unexpectedly succeeded"
+fi
+assert_contains "E_ENTRYPOINT_CONFLICT" "$TEST_ROOT/entrypoint-conflict-error"
+assert_contains "state=entrypoint-conflict" "$TEST_ROOT/entrypoint-conflict-error"
+assert_contains "impact=existing-command-preserved" "$TEST_ROOT/entrypoint-conflict-error"
+assert_contains "retry_safe=true" "$TEST_ROOT/entrypoint-conflict-error"
+assert_contains "next_command=sh install.sh --source ." "$TEST_ROOT/entrypoint-conflict-error"
+cmp "$TEST_ROOT/user-zcr" "$home/bin/zcr" || fail "entrypoint conflict replaced user command"
 pass
 
 home=$TEST_ROOT/legacy

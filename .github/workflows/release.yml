@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run script-only release gate
+      - name: Run script-only lifecycle, docs/bootstrap/user-command and release gate
         shell: sh
         run: sh scripts/test_all.sh
 
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run script-only release gate
+      - name: Run script-only lifecycle, docs/bootstrap/user-command and release gate
         shell: powershell
         run: .\scripts\test_all.ps1
 
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Run script-only release gate
+      - name: Run script-only lifecycle, docs/bootstrap/user-command and release gate
         shell: pwsh
         run: ./scripts/test_all.ps1
 
